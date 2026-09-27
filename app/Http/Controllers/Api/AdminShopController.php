@@ -1,0 +1,310 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Resources\OrderResource;
+use App\Models\Order;
+use App\Models\ProductOverride;
+use App\Models\User;
+use App\Services\DolibarrClient;
+use App\Services\DolibarrOrderPusher;
+use App\Services\InvoicePdfRenderer;
+use App\Services\PricingEngine;
+use App\Support\SiteSettings;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+
+class AdminShopController extends Controller
+{
+    /**
+     * How many rows to pull from Dolibarr in one request before filtering
+     * and sorting locally. Visibility and price depend on this app's own
+     * DB (product_overrides, shop_settings), so they can't be pushed into
+     * Dolibarr's sqlfilters/sortfield — filtering happens here instead,
+     * over one large batch rather than per-page.
+     *
+     * If the real catalog ever exceeds this, results silently stop at
+     * whatever Dolibarr's own default order returns first rather than
+     * failing loudly. Dolibarr's REST API supports a `pagination_data=1`
+     * flag that returns a real COUNT(*) (see api_products.class.php) —
+     * that's the documented follow-up if this cap is ever hit.
+     */
+    private const ADMIN_PRODUCT_BATCH_SIZE = 300;
+
+    private const ADMIN_PRODUCT_PAGE_SIZE = 30;
+
+    public function __construct(
+        private readonly DolibarrClient $dolibarr,
+        private readonly PricingEngine $pricing,
+        private readonly InvoicePdfRenderer $invoices,
+        private readonly DolibarrOrderPusher $pusher,
+    ) {}
+
+    public function products(Request $request): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $input = $request->validate([
+            'q' => ['sometimes', 'string', 'max:80', 'regex:/^[\p{L}\p{N} _.\-]+$/u'],
+            'page' => ['sometimes', 'integer', 'min:0'],
+            'visibility' => ['sometimes', 'in:all,visible,hidden'],
+            'stock' => ['sometimes', 'in:all,in_stock,low_stock,out_of_stock'],
+            'stock_min' => ['sometimes', 'numeric', 'min:0'],
+            'stock_max' => ['sometimes', 'numeric', 'min:0'],
+            'sort' => ['sometimes', 'in:default,name_asc,name_desc,price_asc,price_desc,stock,stock_desc'],
+        ]);
+        $page = (int) ($input['page'] ?? 0);
+        $visibility = $input['visibility'] ?? 'all';
+        $stock = $input['stock'] ?? 'all';
+        $stockMin = isset($input['stock_min']) ? (float) $input['stock_min'] : null;
+        $stockMax = isset($input['stock_max']) ? (float) $input['stock_max'] : null;
+        $sort = $input['sort'] ?? 'default';
+
+        try {
+            $products = $this->dolibarr->products(
+                self::ADMIN_PRODUCT_BATCH_SIZE, 0,
+                search: trim($input['q'] ?? ''), requireCost: false, requireStock: false,
+            );
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return response()->json(['message' => 'The ERP catalog is unavailable.'], 503);
+        }
+
+        $overrides = ProductOverride::whereIn('erp_product_id', array_column($products, 'id'))->get()->keyBy('erp_product_id');
+        $rows = collect($products)->map(function (array $product) use ($overrides): array {
+            $id = (int) ($product['id'] ?? 0);
+            $override = $overrides->get($id);
+            $cost = $this->pricing->sourceCost($product);
+            $stockQuantity = $this->pricing->stockQuantity($product);
+
+            return [
+                'id' => $id,
+                'ref' => (string) ($product['ref'] ?? ''),
+                'name' => (string) ($product['label'] ?? $product['ref'] ?? ''),
+                'stock_quantity' => $stockQuantity,
+                'stock_status' => $this->pricing->stockStatus($stockQuantity),
+                'price' => $cost > 0 ? (int) $this->pricing->sellingPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
+                'is_hidden' => $override?->is_hidden ?? false,
+                'profit_percentage' => $override?->profit_percentage,
+                'display_name' => $override?->display_name,
+                'description' => $override?->description,
+            ];
+        });
+
+        $rows = $rows
+            ->when($visibility !== 'all', fn ($rows) => $rows->filter(
+                fn (array $row) => $visibility === 'visible' ? ! $row['is_hidden'] : $row['is_hidden']
+            ))
+            ->when($stock !== 'all', fn ($rows) => $rows->filter(fn (array $row) => $row['stock_status'] === $stock))
+            ->when($stockMin !== null, fn ($rows) => $rows->filter(fn (array $row) => ($row['stock_quantity'] ?? 0) >= $stockMin))
+            ->when($stockMax !== null, fn ($rows) => $rows->filter(fn (array $row) => ($row['stock_quantity'] ?? 0) <= $stockMax));
+
+        $rows = match ($sort) {
+            'name_asc' => $rows->sortBy(fn (array $row) => mb_strtolower($row['display_name'] ?? $row['name']), SORT_NATURAL)->values(),
+            'name_desc' => $rows->sortByDesc(fn (array $row) => mb_strtolower($row['display_name'] ?? $row['name']), SORT_NATURAL)->values(),
+            'price_asc' => $rows->sortBy(fn (array $row) => $row['price'] ?? PHP_INT_MAX)->values(),
+            'price_desc' => $rows->sortByDesc(fn (array $row) => $row['price'] ?? PHP_INT_MIN)->values(),
+            'stock' => $rows->sortBy(fn (array $row) => $row['stock_quantity'] ?? 0)->values(),
+            'stock_desc' => $rows->sortByDesc(fn (array $row) => $row['stock_quantity'] ?? 0)->values(),
+            default => $rows->values(),
+        };
+
+        $total = $rows->count();
+        $data = $rows->slice($page * self::ADMIN_PRODUCT_PAGE_SIZE, self::ADMIN_PRODUCT_PAGE_SIZE)->values();
+
+        return response()->json([
+            'data' => $data,
+            'page' => $page,
+            'total' => $total,
+            'has_more' => ($page + 1) * self::ADMIN_PRODUCT_PAGE_SIZE < $total,
+        ]);
+    }
+
+    public function updateProduct(Request $request, int $id): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $data = $request->validate([
+            'is_hidden' => ['sometimes', 'boolean'],
+            'profit_percentage' => ['sometimes', 'nullable', 'numeric', 'between:0,1000'],
+            'display_name' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
+        ]);
+        try {
+            $product = $this->dolibarr->product($id);
+        } catch (\Throwable $exception) {
+            return response()->json(['message' => 'Product not found in ERP.'], 404);
+        }
+        $override = ProductOverride::updateOrCreate(
+            ['erp_product_id' => $id],
+            array_merge(['ref' => (string) ($product['ref'] ?? '')], $data),
+        );
+
+        return response()->json(['data' => $override]);
+    }
+
+    public function updateOrder(Request $request, Order $order): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $data = $request->validate([
+            'action' => ['required_without:fulfilment_status', 'in:cancel,confirm_cash_delivery'],
+            'fulfilment_status' => ['required_without:action', Rule::in(Order::FULFILMENT_STATUSES)],
+        ]);
+
+        // Moving the parts along the line. Independent of the payment actions
+        // below, so it is handled first and on its own.
+        if (isset($data['fulfilment_status'])) {
+            if (! $order->moveFulfilmentTo($data['fulfilment_status'])) {
+                return response()->json(['message' => 'This order cannot be fulfilled in its current state.'], 422);
+            }
+
+            return response()->json(['data' => new OrderResource($order->fresh()->load('items'))]);
+        }
+
+        if ($data['action'] === 'confirm_cash_delivery' && $order->payment_method === Order::METHOD_COD && $order->status === Order::STATUS_AWAITING_DELIVERY) {
+            $order->forceFill(['status' => Order::STATUS_PAID, 'paid_at' => now()])->save();
+            // Taking the cash *is* the handover, so the goods are delivered by
+            // definition — otherwise every COD order would finish its life
+            // sitting in "out for delivery".
+            $order->moveFulfilmentTo(Order::FULFILMENT_DELIVERED);
+            // Cash on delivery is confirmed by an admin rather than a payment
+            // gateway callback, so nothing else pushes it to Dolibarr — do it here.
+            $this->pusher->push($order);
+        } elseif ($data['action'] === 'cancel' && $order->payment_method === Order::METHOD_COD && $order->status === Order::STATUS_AWAITING_DELIVERY) {
+            $order->forceFill(['status' => Order::STATUS_CANCELLED])->save();
+        } else {
+            return response()->json(['message' => 'This order cannot make that transition.'], 422);
+        }
+
+        return response()->json(['data' => new OrderResource($order->fresh()->load('items'))]);
+    }
+
+    /**
+     * Retry pushing a paid order into Dolibarr as a sales order and invoice.
+     * The push is idempotent (see DolibarrOrderPusher), so this is safe to
+     * call whether the previous attempt partially succeeded or never ran.
+     */
+    public function retryErpSync(Request $request, Order $order): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        if (! $order->isPaid()) {
+            return response()->json(['message' => 'Only a paid order can be synced to the ERP.'], 422);
+        }
+
+        $this->pusher->push($order);
+
+        return response()->json(['data' => new OrderResource($order->fresh()->load('items'))]);
+    }
+
+    /**
+     * One order's full detail (line items, address, notes) for the admin
+     * order page — unlike CheckoutController::show, this trusts the admin
+     * session rather than the order's access key.
+     */
+    public function showOrder(Request $request, Order $order): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        return response()->json(['data' => new OrderResource($order->load('items'))]);
+    }
+
+    /**
+     * The same invoice PDF a customer can download, available to an admin
+     * without the order's access key.
+     */
+    public function orderInvoice(Request $request, Order $order): Response|JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        if (! $order->hasInvoice()) {
+            return response()->json(['message' => 'Invoice not found.'], 404);
+        }
+
+        $lang = in_array($request->query('lang'), ['ar', 'ku'], true) ? $request->query('lang') : 'en';
+
+        return response($this->invoices->render($order->load('items'), $lang), 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="'.$order->reference.'-INV.pdf"',
+        ]);
+    }
+
+    public function summary(Request $request): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        return response()->json(['data' => [
+            'total_orders' => Order::count(),
+            'open_orders' => Order::whereIn('status', [Order::STATUS_PENDING, Order::STATUS_AWAITING_DELIVERY])->count(),
+            'paid_revenue' => (int) Order::where('status', Order::STATUS_PAID)->sum('total'),
+            'customer_accounts' => User::count(),
+            'dealer_accounts' => User::where('role', 'dealer')->count(),
+        ]]);
+    }
+
+    public function settings(Request $request): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        return response()->json(['data' => array_merge(
+            collect(config('shop'))->only(['profit_percentage', 'usd_iqd_rate', 'rounding_increment', 'low_stock_threshold'])->all(),
+            DB::table('shop_settings')->pluck('value', 'key')->all(),
+            SiteSettings::all(),
+        )]);
+    }
+
+    public function updateSettings(Request $request): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $data = $request->validate([
+            'profit_percentage' => ['sometimes', 'numeric', 'between:0,1000'],
+            'usd_iqd_rate' => ['sometimes', 'numeric', 'between:1,100000'],
+            'rounding_increment' => ['sometimes', 'integer', 'between:1,100000'],
+            'low_stock_threshold' => ['sometimes', 'numeric', 'between:0,100000'],
+            'phone_number' => ['sometimes', 'string', 'min:5', 'max:40'],
+            'whatsapp_number' => ['sometimes', 'string', 'min:5', 'max:20', 'regex:/^[0-9]+$/'],
+            // Nullable: the storefront's ConvertEmptyStringsToNull middleware turns a
+            // cleared field into null before it gets here. Null is stored as '', which
+            // means "use the storefront's own translated default" (see SiteSettings).
+            'free_delivery_text' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'trusted_since_text' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'store_address' => ['sometimes', 'nullable', 'string', 'max:200'],
+            'store_hours' => ['sometimes', 'nullable', 'string', 'max:120'],
+        ]);
+        foreach ($data as $key => $value) {
+            DB::table('shop_settings')->updateOrInsert(['key' => $key], ['value' => (string) $value, 'updated_at' => now(), 'created_at' => now()]);
+        }
+
+        return $this->settings($request);
+    }
+
+    private function authorized(Request $request): bool
+    {
+        return AccountController::user($request)?->role === 'admin';
+    }
+}
