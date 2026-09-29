@@ -59,6 +59,21 @@ class ShopAccountTest extends TestCase
         $this->withToken($token)->getJson('/api/account')->assertOk()->assertJsonPath('data.name', 'New Name');
     }
 
+    public function test_customer_can_save_delivery_address_on_profile(): void
+    {
+        $registered = $this->postJson('/api/register', [
+            'name' => 'Address Customer', 'username' => 'address_customer', 'phone' => '0770 123 4567',
+            'password' => 'secret123', 'password_confirmation' => 'secret123',
+        ])->assertCreated();
+
+        $this->withToken($registered->json('token'))->patchJson('/api/account', [
+            'city' => 'Erbil', 'address' => 'Industrial Area',
+        ])->assertOk()->assertJsonPath('data.city', 'Erbil')->assertJsonPath('data.address', 'Industrial Area');
+
+        $this->withToken($registered->json('token'))->getJson('/api/account')
+            ->assertJsonPath('data.city', 'Erbil')->assertJsonPath('data.address', 'Industrial Area');
+    }
+
     public function test_customer_cannot_take_another_accounts_phone_number(): void
     {
         User::factory()->create(['phone' => '9647703333333']);

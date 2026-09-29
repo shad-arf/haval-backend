@@ -35,9 +35,10 @@ class CheckoutService
     {
         $priced = $this->priceLines($lines);
 
-        if ($account?->role === 'dealer' && $account->discount_percent > 0) {
+        $discountPercent = $account?->activeDiscountPercent() ?? 0;
+        if ($discountPercent > 0) {
             foreach ($priced as &$line) {
-                $line['unit_price'] = (int) $this->pricing->roundUp($line['unit_price'] * (100 - $account->discount_percent) / 100);
+                $line['unit_price'] = (int) $this->pricing->roundUp($line['unit_price'] * (100 - $discountPercent) / 100);
                 $line['line_total'] = $line['unit_price'] * $line['quantity'];
             }
             unset($line);

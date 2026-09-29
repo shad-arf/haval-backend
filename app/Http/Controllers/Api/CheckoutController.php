@@ -108,6 +108,10 @@ class CheckoutController extends Controller
             );
             if ($account) {
                 $order->forceFill(['user_id' => $account->id])->save();
+                $account->forceFill([
+                    'city' => $input['customer']['city'],
+                    'address' => $input['customer']['address'],
+                ])->save();
             }
         } catch (CheckoutException $exception) {
             return response()->json(['message' => $exception->getMessage()], 422);

@@ -42,7 +42,13 @@ class AdminShopTest extends TestCase
         $this->withToken($this->adminToken())->postJson('/api/admin/users', [
             'name' => 'Trade buyer', 'username' => 'trade_buyer', 'phone' => '07702222222', 'password' => 'secret123',
             'role' => 'dealer', 'discount_percent' => 15,
-        ])->assertCreated()->assertJsonPath('data.role', 'dealer');
+            'discount_expires_at' => now()->addDay()->toISOString(), 'show_discount_countdown' => true,
+        ])->assertCreated()->assertJsonPath('data.role', 'dealer')->assertJsonPath('data.show_discount_countdown', true);
+
+        $dealer = User::where('username', 'trade_buyer')->firstOrFail();
+        $this->withToken('admin-test-token')->patchJson('/api/admin/users/'.$dealer->id, [
+            'discount_expires_at' => null, 'show_discount_countdown' => false,
+        ])->assertOk()->assertJsonPath('data.discount_expires_at', null)->assertJsonPath('data.show_discount_countdown', false);
 
         $order = Order::create([
             'reference' => 'WEB-999999', 'access_key' => Order::newAccessKey(),

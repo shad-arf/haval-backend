@@ -29,7 +29,18 @@ class User extends Authenticatable
             'password' => 'hashed',
             'is_active' => 'boolean',
             'discount_percent' => 'integer',
+            'discount_expires_at' => 'datetime',
+            'show_discount_countdown' => 'boolean',
             'last_login_at' => 'datetime',
         ];
+    }
+
+    public function activeDiscountPercent(): int
+    {
+        if ($this->role !== 'dealer' || ($this->discount_expires_at && $this->discount_expires_at->isPast())) {
+            return 0;
+        }
+
+        return $this->discount_percent;
     }
 }

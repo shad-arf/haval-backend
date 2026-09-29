@@ -57,7 +57,7 @@ class AccountController extends Controller
 
     public function me(Request $request): JsonResponse
     {
-        return response()->json(['data' => self::user($request)?->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'created_at'])]);
+        return response()->json(['data' => $this->accountData(self::user($request))]);
     }
 
     /**
@@ -85,6 +85,8 @@ class AccountController extends Controller
             'name' => ['sometimes', 'required', 'string', 'max:120'],
             'username' => ['sometimes', 'required', 'string', 'max:40', 'regex:/^[\p{L}][\p{L}\p{N}_.-]{2,39}$/u', Rule::unique('users', 'username')->ignore($user->id)],
             'phone' => ['sometimes', 'required', 'regex:/^[0-9]{10,15}$/', Rule::unique('users', 'phone')->ignore($user->id)],
+            'city' => ['sometimes', 'nullable', 'string', 'max:96'],
+            'address' => ['sometimes', 'nullable', 'string', 'max:255'],
             'current_password' => ['required_with:password', 'string'],
             'password' => ['sometimes', 'confirmed', Password::min(8)],
         ]);
@@ -93,9 +95,9 @@ class AccountController extends Controller
             return response()->json(['message' => 'Current password is incorrect.'], 422);
         }
 
-        $user->forceFill(collect($data)->only(['name', 'username', 'phone', 'password'])->all())->save();
+        $user->forceFill(collect($data)->only(['name', 'username', 'phone', 'city', 'address', 'password'])->all())->save();
 
-        return response()->json(['data' => $user->refresh()->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'created_at'])]);
+        return response()->json(['data' => $this->accountData($user->refresh())]);
     }
 
     public function logout(Request $request): JsonResponse
@@ -132,7 +134,7 @@ class AccountController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        return response()->json(['data' => User::latest()->limit(200)->get(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'is_active', 'last_login_at'])]);
+        return response()->json(['data' => User::latest()->limit(200)->get(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'is_active', 'last_login_at'])]);
     }
 
     public function createUser(Request $request): JsonResponse
@@ -152,11 +154,18 @@ class AccountController extends Controller
             'password' => ['required', Password::min(8)],
             'role' => ['required', 'in:customer,dealer'],
             'discount_percent' => ['required', 'integer', 'between:0,99'],
+            'discount_expires_at' => ['nullable', 'date', 'after:now'],
+            'show_discount_countdown' => ['sometimes', 'boolean'],
         ]);
         $user = User::create(collect($data)->only(['name', 'username', 'phone', 'password'])->all());
-        $user->forceFill(['role' => $data['role'], 'discount_percent' => $data['discount_percent']])->save();
+        $user->forceFill([
+            'role' => $data['role'],
+            'discount_percent' => $data['discount_percent'],
+            'discount_expires_at' => $data['discount_expires_at'] ?? null,
+            'show_discount_countdown' => $data['show_discount_countdown'] ?? false,
+        ])->save();
 
-        return response()->json(['data' => $user->refresh()->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'is_active'])], 201);
+        return response()->json(['data' => $user->refresh()->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'is_active'])], 201);
     }
 
     public function updateUser(Request $request, User $user): JsonResponse
@@ -176,6 +185,8 @@ class AccountController extends Controller
             'phone' => ['sometimes', 'nullable', 'regex:/^[0-9]{10,15}$/', Rule::unique('users', 'phone')->ignore($user->id)],
             'role' => ['sometimes', 'in:customer,dealer,admin'],
             'discount_percent' => ['sometimes', 'integer', 'between:0,99'],
+            'discount_expires_at' => ['sometimes', 'nullable', 'date', 'after:now'],
+            'show_discount_countdown' => ['sometimes', 'boolean'],
             'is_active' => ['sometimes', 'boolean'],
         ]);
         if ($user->id === self::user($request)->id && (($data['role'] ?? 'admin') !== 'admin' || ($data['is_active'] ?? true) === false)) {
@@ -183,7 +194,7 @@ class AccountController extends Controller
         }
         $user->forceFill($data)->save();
 
-        return response()->json(['data' => $user->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'is_active'])]);
+        return response()->json(['data' => $user->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'is_active'])]);
     }
 
     private function isAdmin(Request $request): bool
@@ -196,7 +207,18 @@ class AccountController extends Controller
         $token = Str::random(64);
         $user->forceFill(['api_token_hash' => hash('sha256', $token)])->save();
 
-        return response()->json(['data' => $user->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'created_at']), 'token' => $token], $status);
+        return response()->json(['data' => $this->accountData($user), 'token' => $token], $status);
+    }
+
+    private function accountData(?User $user): ?array
+    {
+        if (! $user) {
+            return null;
+        }
+
+        return array_merge($user->only(['id', 'name', 'username', 'phone', 'role', 'discount_expires_at', 'show_discount_countdown', 'city', 'address', 'created_at']), [
+            'discount_percent' => $user->activeDiscountPercent(),
+        ]);
     }
 
     private static function normalizePhone(string $phone): string

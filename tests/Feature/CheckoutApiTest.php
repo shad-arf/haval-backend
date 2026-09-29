@@ -110,6 +110,25 @@ class CheckoutApiTest extends TestCase
         $this->assertDatabaseHas('orders', ['user_id' => $dealer->id, 'total' => 20000]);
     }
 
+    public function test_expired_dealer_discount_is_not_applied_and_checkout_saves_address(): void
+    {
+        $this->fakeErp($this->erpProduct());
+        $dealer = User::factory()->create([
+            'role' => 'dealer', 'discount_percent' => 10,
+            'discount_expires_at' => now()->subMinute(),
+        ]);
+        $token = 'expired-dealer-token';
+        $dealer->forceFill(['api_token_hash' => hash('sha256', $token)])->save();
+
+        $this->withToken($token)->postJson('/api/checkout', $this->checkoutPayload())
+            ->assertCreated()->assertJsonPath('data.total', 22000);
+
+        $this->assertDatabaseHas('users', [
+            'id' => $dealer->id, 'city' => 'Erbil', 'address' => 'Industrial Area',
+        ]);
+        $this->withToken($token)->getJson('/api/account')->assertJsonPath('data.discount_percent', 0);
+    }
+
     public function test_duplicate_cart_lines_for_one_part_are_merged(): void
     {
         $this->fakeErp($this->erpProduct());
