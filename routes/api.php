@@ -22,6 +22,7 @@ Route::get('/admin/users', [AccountController::class, 'adminUsers']);
 Route::patch('/admin/users/{user}', [AccountController::class, 'updateUser']);
 Route::post('/admin/users', [AccountController::class, 'createUser']);
 Route::get('/admin/products', [AdminShopController::class, 'products']);
+Route::get('/admin/products/{id}', [AdminShopController::class, 'showProduct'])->whereNumber('id');
 Route::patch('/admin/products/{id}', [AdminShopController::class, 'updateProduct'])->whereNumber('id');
 Route::get('/admin/orders/{order:reference}', [AdminShopController::class, 'showOrder']);
 Route::patch('/admin/orders/{order:reference}', [AdminShopController::class, 'updateOrder']);

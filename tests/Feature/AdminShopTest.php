@@ -130,6 +130,68 @@ class AdminShopTest extends TestCase
         $this->assertFalse($response->json('has_more'));
     }
 
+    public function test_admin_products_endpoint_reports_why_a_product_is_not_storefront_visible(): void
+    {
+        config()->set('dolibarr.url', 'http://erp.test/api/index.php');
+        config()->set('dolibarr.key', 'test-key');
+
+        $rows = [
+            // No cost price at all: unpriceable, so it can never be publishable.
+            ['id' => 1, 'ref' => 'A-1', 'label' => 'Alpha part', 'status' => 1, 'cost_price' => 0, 'stock_reel' => 10],
+            // Has a cost but no stock, and the storefront hides out-of-stock parts by default.
+            ['id' => 2, 'ref' => 'B-2', 'label' => 'Bravo part', 'status' => 1, 'cost_price' => 10, 'stock_reel' => 0],
+            // Priced and in stock: would be publishable until hidden below.
+            ['id' => 3, 'ref' => 'C-3', 'label' => 'Charlie part', 'status' => 1, 'cost_price' => 10, 'stock_reel' => 5],
+            ['id' => 4, 'ref' => 'D-4', 'label' => 'Delta part', 'status' => 1, 'cost_price' => 10, 'stock_reel' => 5],
+        ];
+        Http::fake(['erp.test/*' => Http::response($rows)]);
+
+        $token = $this->adminToken();
+        $this->withToken($token)->patchJson('/api/admin/products/3', ['is_hidden' => true])->assertOk();
+
+        $response = $this->withToken($token)->getJson('/api/admin/products')->assertOk();
+        $byId = collect($response->json('data'))->keyBy('id');
+
+        $this->assertFalse($byId[1]['storefront_visible']);
+        $this->assertSame('no_cost', $byId[1]['visibility_reason']);
+
+        $this->assertFalse($byId[2]['storefront_visible']);
+        $this->assertSame('out_of_stock', $byId[2]['visibility_reason']);
+
+        $this->assertFalse($byId[3]['storefront_visible']);
+        $this->assertSame('hidden', $byId[3]['visibility_reason']);
+
+        $this->assertTrue($byId[4]['storefront_visible']);
+        $this->assertNull($byId[4]['visibility_reason']);
+    }
+
+    public function test_admin_can_view_a_single_product_detail_and_only_admin_can(): void
+    {
+        config()->set('dolibarr.url', 'http://erp.test/api/index.php');
+        config()->set('dolibarr.key', 'test-key');
+        $product = [
+            'id' => 42, 'ref' => 'PART-42', 'label' => 'Test part', 'description' => '<p>Fits many models</p>',
+            'status' => 1, 'cost_price' => 0, 'stock_reel' => 8,
+        ];
+        Http::fake([
+            'erp.test/api/index.php/products/42*' => Http::response($product),
+            'erp.test/api/index.php/products/999*' => Http::response(['error' => ['message' => 'not found']], 404),
+        ]);
+
+        $this->getJson('/api/admin/products/42')->assertForbidden();
+
+        $token = $this->adminToken();
+        $this->withToken($token)->getJson('/api/admin/products/42')
+            ->assertOk()
+            ->assertJsonPath('data.ref', 'PART-42')
+            ->assertJsonPath('data.erp_description', 'Fits many models')
+            ->assertJsonPath('data.has_cost', false)
+            ->assertJsonPath('data.storefront_visible', false)
+            ->assertJsonPath('data.visibility_reason', 'no_cost');
+
+        $this->withToken($token)->getJson('/api/admin/products/999')->assertNotFound();
+    }
+
     public function test_admin_products_endpoint_requires_admin(): void
     {
         $this->getJson('/api/admin/products')->assertForbidden();

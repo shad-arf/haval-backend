@@ -83,6 +83,8 @@ class AdminShopController extends Controller
             $override = $overrides->get($id);
             $cost = $this->pricing->sourceCost($product);
             $stockQuantity = $this->pricing->stockQuantity($product);
+            $isHidden = $override?->is_hidden ?? false;
+            $reason = $this->visibilityReason($cost, $stockQuantity, $isHidden);
 
             return [
                 'id' => $id,
@@ -91,10 +93,12 @@ class AdminShopController extends Controller
                 'stock_quantity' => $stockQuantity,
                 'stock_status' => $this->pricing->stockStatus($stockQuantity),
                 'price' => $cost > 0 ? (int) $this->pricing->sellingPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
-                'is_hidden' => $override?->is_hidden ?? false,
+                'is_hidden' => $isHidden,
                 'profit_percentage' => $override?->profit_percentage,
                 'display_name' => $override?->display_name,
                 'description' => $override?->description,
+                'storefront_visible' => $reason === null,
+                'visibility_reason' => $reason,
             ];
         });
 
@@ -150,6 +154,49 @@ class AdminShopController extends Controller
         );
 
         return response()->json(['data' => $override]);
+    }
+
+    /**
+     * One product's full ERP detail plus its local override, for the admin
+     * product detail page reached by clicking a row in the product list.
+     */
+    public function showProduct(Request $request, int $id): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        try {
+            $product = $this->dolibarr->product($id);
+        } catch (\Throwable $exception) {
+            return response()->json(['message' => 'Product not found in ERP.'], 404);
+        }
+
+        $override = ProductOverride::where('erp_product_id', $id)->first();
+        $cost = $this->pricing->sourceCost($product);
+        $stockQuantity = $this->pricing->stockQuantity($product);
+        $isHidden = $override?->is_hidden ?? false;
+        $reason = $this->visibilityReason($cost, $stockQuantity, $isHidden);
+        $ref = (string) ($product['ref'] ?? '');
+
+        return response()->json(['data' => [
+            'id' => $id,
+            'ref' => $ref,
+            'name' => (string) ($product['label'] ?? $ref),
+            'erp_description' => trim(strip_tags((string) ($product['description'] ?? ''))),
+            'stock_quantity' => $stockQuantity,
+            'stock_status' => $this->pricing->stockStatus($stockQuantity),
+            'price' => $cost > 0 ? (int) $this->pricing->sellingPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
+            'has_cost' => $cost > 0,
+            'is_hidden' => $isHidden,
+            'profit_percentage' => $override?->profit_percentage,
+            'display_name' => $override?->display_name,
+            'description' => $override?->description,
+            'storefront_visible' => $reason === null,
+            'visibility_reason' => $reason,
+            'image_url' => $ref === '' ? null : route('products.image', ['ref' => $ref]),
+            'image_full_url' => $ref === '' ? null : route('products.image', ['ref' => $ref, 'size' => 'full']),
+        ]]);
     }
 
     public function updateOrder(Request $request, Order $order): JsonResponse
@@ -306,5 +353,30 @@ class AdminShopController extends Controller
     private function authorized(Request $request): bool
     {
         return AccountController::user($request)?->role === 'admin';
+    }
+
+    /**
+     * Why a product wouldn't appear in the storefront, or null when it would.
+     *
+     * Mirrors ErpProductController::catalogProduct()'s gate exactly — a
+     * product is storefront-visible iff it isn't hidden and PricingEngine
+     * considers it publishable — so this can't drift from what customers
+     * actually see.
+     */
+    private function visibilityReason(float $cost, ?float $quantity, bool $isHidden): ?string
+    {
+        if ($isHidden) {
+            return 'hidden';
+        }
+
+        if ($cost <= 0) {
+            return 'no_cost';
+        }
+
+        if (! $this->pricing->isPublishable($cost, $quantity)) {
+            return 'out_of_stock';
+        }
+
+        return null;
     }
 }
