@@ -176,7 +176,7 @@ class AdminShopController extends Controller
         $cost = $this->pricing->sourceCost($product);
         $stockQuantity = $this->pricing->stockQuantity($product);
         $isHidden = $override?->is_hidden ?? false;
-        $reason = $this->visibilityReason($cost, $stockQuantity, $isHidden);
+        $reason = $this->visibilityReasonDetailed($id, $cost, $stockQuantity, $isHidden);
         $ref = (string) ($product['ref'] ?? '');
 
         return response()->json(['data' => [
@@ -375,6 +375,34 @@ class AdminShopController extends Controller
 
         if (! $this->pricing->isPublishable($cost, $quantity)) {
             return 'out_of_stock';
+        }
+
+        return null;
+    }
+
+    /**
+     * The product detail page can afford two extra ERP round trips to catch
+     * what visibilityReason() can't see from data already in hand: a product
+     * that clears every local check yet still never reaches the storefront,
+     * because DolibarrClient::products() filters on the raw `cost_price`/
+     * `stock` columns before PricingEngine's fallback fields are considered.
+     * Not run from products() — that would mean two extra ERP calls per row
+     * across a batch of up to 300.
+     */
+    private function visibilityReasonDetailed(int $id, float $cost, ?float $quantity, bool $isHidden): ?string
+    {
+        $reason = $this->visibilityReason($cost, $quantity, $isHidden);
+
+        if ($reason !== null) {
+            return $reason;
+        }
+
+        if (! $this->dolibarr->matchesRawColumnFilter($id, 't.cost_price:>:0')) {
+            return 'stale_cost_cache';
+        }
+
+        if (! $this->dolibarr->matchesRawColumnFilter($id, 't.stock:>:0')) {
+            return 'stale_stock_cache';
         }
 
         return null;

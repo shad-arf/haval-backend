@@ -64,6 +64,37 @@ class DolibarrClient
     }
 
     /**
+     * Whether Dolibarr's own row for this product satisfies a raw-column
+     * condition, checked directly against the ERP rather than against
+     * anything this app has fetched.
+     *
+     * products() filters the catalog on the raw `t.cost_price`/`t.stock`
+     * columns before PricingEngine's fallback fields (`cost`, `pmp`,
+     * `stock_reel`) ever come into play. A product can pass every local
+     * check — because it has a usable cost or stock through a fallback
+     * field — and still never reach the storefront because Dolibarr's own
+     * query drops it first. This is how the admin product page tells the
+     * two apart instead of just calling every such product "visible."
+     */
+    public function matchesRawColumnFilter(int $id, string $condition): bool
+    {
+        try {
+            $result = $this->get('products', [
+                'limit' => 1,
+                'sqlfilters' => "(t.rowid:=:{$id}) and ({$condition})",
+            ]);
+        } catch (DolibarrRequestException $exception) {
+            if ($exception->upstreamStatus === 404) {
+                return false;
+            }
+
+            throw $exception;
+        }
+
+        return $result !== [];
+    }
+
+    /**
      * Product categories, used as storefront brands.
      *
      * @return array<int, array<string, mixed>>
