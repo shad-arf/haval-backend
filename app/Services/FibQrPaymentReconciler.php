@@ -68,6 +68,27 @@ class FibQrPaymentReconciler
         return $order->refresh();
     }
 
+    /**
+     * Close every QR code still open on an unpaid order, so a customer who
+     * switched to another way of paying cannot also pay the old code. A
+     * failed cancel is logged and left to expire on FIB's side.
+     */
+    public function cancelOpenAttempts(Order $order): void
+    {
+        foreach ($order->fibQrAttempts()->get() as $attempt) {
+            if (in_array($attempt->last_status, ['PAID', 'DECLINED'], true)) {
+                continue;
+            }
+
+            try {
+                $this->fib->cancelPayment($attempt->payment_id);
+                $attempt->update(['last_status' => 'DECLINED']);
+            } catch (RuntimeException $exception) {
+                Log::warning('[fib-qr] cancel failed for order '.$order->reference.': '.$exception->getMessage());
+            }
+        }
+    }
+
     /** @param  array<string, mixed>  $data */
     private function amountMatches(FibQrPaymentAttempt $attempt, array $data): bool
     {

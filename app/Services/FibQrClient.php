@@ -67,6 +67,25 @@ class FibQrClient
         return $data;
     }
 
+    /**
+     * Cancel a QR payment at FIB so its code can no longer be paid. FIB
+     * answers 204; a payment it no longer considers open is not an error here.
+     */
+    public function cancelPayment(string $paymentId): void
+    {
+        try {
+            $response = Http::timeout((int) config('fib_qr.timeout'))
+                ->withToken($this->accessToken())->acceptJson()
+                ->post($this->url('/protected/v1/payments/'.rawurlencode($paymentId).'/cancel'));
+        } catch (ConnectionException $exception) {
+            throw new RuntimeException('FIB QR cancel could not connect.', previous: $exception);
+        }
+
+        if (! $response->successful() && ! in_array($response->status(), [404, 409], true)) {
+            throw new RuntimeException('FIB QR cancel failed (HTTP '.$response->status().').');
+        }
+    }
+
     private function accessToken(): string
     {
         if (! $this->isConfigured()) {

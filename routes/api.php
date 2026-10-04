@@ -57,6 +57,7 @@ Route::get('/orders/{reference}', [CheckoutController::class, 'show']);
 Route::get('/orders/{reference}/status', [CheckoutController::class, 'status']);
 Route::get('/orders/{reference}/invoice', [CheckoutController::class, 'invoice']);
 Route::post('/orders/{reference}/pay', [CheckoutController::class, 'retryPayment']);
+Route::post('/orders/{reference}/abandon', [CheckoutController::class, 'abandon']);
 
 // Gateway entry points. Neither is trusted as evidence of payment.
 Route::post('/payments/fib/callback', [FibPaymentController::class, 'callback']);

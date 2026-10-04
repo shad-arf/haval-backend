@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Order;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -123,6 +124,65 @@ class FibQrPaymentTest extends TestCase
             ->assertOk()->assertJsonPath('data.qr_payment.qr_code', 'data:image/png;base64,aGVsbG8=');
         $this->assertSame(Order::STATUS_PENDING, $order->fresh()->status);
         $this->assertDatabaseCount('fib_qr_payment_attempts', 2);
+    }
+
+    /** FIB answering by path; $status is what the open QR reports. */
+    private function fakeFib(string $status): void
+    {
+        Http::fake(function (Request $request) use ($status) {
+            $path = parse_url($request->url(), PHP_URL_PATH);
+
+            return match (true) {
+                str_ends_with($path, '/cancel') => Http::response(null, 204),
+                str_ends_with($path, '/status') => Http::response(['paymentId' => 'payment-1', 'status' => $status, 'amount' => ['amount' => '22000.00', 'currency' => 'IQD']]),
+                default => Http::response(['access_token' => 'token']),
+            };
+        });
+    }
+
+    public function test_abandoning_an_unpaid_qr_order_cancels_the_code_at_fib(): void
+    {
+        $this->fakeFib('UNPAID');
+        $order = $this->order();
+        $this->attempt($order);
+
+        $this->postJson("/api/orders/{$order->reference}/abandon?key={$order->access_key}")
+            ->assertOk()->assertJsonPath('data.status', Order::STATUS_CANCELLED);
+
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/payments/payment-1/cancel'));
+        $this->assertSame('DECLINED', $order->fibQrAttempts()->first()->last_status);
+    }
+
+    public function test_a_qr_paid_at_the_last_second_is_not_abandoned(): void
+    {
+        $this->fakeFib('PAID');
+        $order = $this->order();
+        $this->attempt($order);
+
+        $this->postJson("/api/orders/{$order->reference}/abandon?key={$order->access_key}")
+            ->assertOk()->assertJsonPath('data.status', Order::STATUS_PAID);
+
+        Http::assertNotSent(fn ($request) => str_ends_with($request->url(), '/cancel'));
+    }
+
+    public function test_abandon_needs_the_order_key(): void
+    {
+        $order = $this->order();
+
+        $this->postJson("/api/orders/{$order->reference}/abandon?key=wrong")->assertNotFound();
+        $this->assertSame(Order::STATUS_PENDING, $order->fresh()->status);
+    }
+
+    public function test_switching_a_qr_order_to_cash_cancels_the_qr(): void
+    {
+        $this->fakeFib('UNPAID');
+        $order = $this->order();
+        $this->attempt($order);
+
+        $this->postJson("/api/orders/{$order->reference}/pay?key={$order->access_key}", ['payment_method' => Order::METHOD_COD])
+            ->assertOk()->assertJsonPath('data.status', Order::STATUS_AWAITING_DELIVERY);
+
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/payments/payment-1/cancel'));
     }
 
     private function order(): Order

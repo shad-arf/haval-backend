@@ -259,6 +259,16 @@ class CheckoutController extends Controller
         ]);
         $method = $input['payment_method'] ?? $order->payment_method;
 
+        // Leaving QR for another method: the open code must not stay payable,
+        // and a code paid in the meantime settles the order instead.
+        if ($method !== Order::METHOD_FIB_QR && $order->fibQrAttempts()->exists()) {
+            $order = $this->qrReconciler->reconcile($order, 'before method change');
+            if ($order->isPaid() || $order->status === Order::STATUS_ON_HOLD) {
+                return response()->json(['message' => 'This order cannot be paid again.'], 422);
+            }
+            $this->qrReconciler->cancelOpenAttempts($order);
+        }
+
         if ($method === Order::METHOD_COD) {
             $order->update(['payment_method' => Order::METHOD_COD, 'status' => Order::STATUS_AWAITING_DELIVERY]);
 
@@ -372,6 +382,33 @@ class CheckoutController extends Controller
         if ($order->isPaid()) {
             $this->pusher->push($order);
         }
+    }
+
+    /**
+     * The customer gave up on an unpaid QR order — typically to pay another
+     * way, or with a changed cart. The QR is checked one last time (a code
+     * paid at the last second settles the order instead), then cancelled at
+     * FIB and the order closed, so the old code cannot be paid on top of the
+     * new order.
+     */
+    public function abandon(Request $request, string $reference): JsonResponse
+    {
+        $order = $this->findOrder($request, $reference);
+
+        if ($order === null) {
+            return response()->json(['message' => 'Order not found.'], 404);
+        }
+
+        if ($order->status === Order::STATUS_PENDING && $order->fibQrAttempts()->exists()) {
+            $order = $this->qrReconciler->reconcile($order, 'before abandon');
+        }
+
+        if ($order->status === Order::STATUS_PENDING) {
+            $this->qrReconciler->cancelOpenAttempts($order);
+            $order->update(['status' => Order::STATUS_CANCELLED]);
+        }
+
+        return response()->json(['data' => new OrderResource($order->fresh()->load('items'))]);
     }
 
     private function findOrder(Request $request, string $reference): ?Order
