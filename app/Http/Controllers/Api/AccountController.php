@@ -6,12 +6,14 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\OrderResource;
 use App\Models\Order;
 use App\Models\User;
+use App\Services\DolibarrClient;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
+use Illuminate\Validation\ValidationException;
 
 class AccountController extends Controller
 {
@@ -134,10 +136,10 @@ class AccountController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        return response()->json(['data' => User::latest()->limit(200)->get(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'is_active', 'last_login_at'])]);
+        return response()->json(['data' => User::latest()->limit(200)->get(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active', 'last_login_at'])]);
     }
 
-    public function createUser(Request $request): JsonResponse
+    public function createUser(Request $request, DolibarrClient $dolibarr): JsonResponse
     {
         if (! $this->isAdmin($request)) {
             return response()->json(['message' => 'Forbidden.'], 403);
@@ -156,19 +158,22 @@ class AccountController extends Controller
             'discount_percent' => ['required', 'integer', 'between:0,99'],
             'discount_expires_at' => ['nullable', 'date', 'after:now'],
             'show_discount_countdown' => ['sometimes', 'boolean'],
+            'customer_code' => ['nullable', 'string', 'max:64'],
         ]);
+        $data['customer_code'] = $this->checkedCustomerCode($data['customer_code'] ?? null, $dolibarr);
         $user = User::create(collect($data)->only(['name', 'username', 'phone', 'password'])->all());
         $user->forceFill([
             'role' => $data['role'],
             'discount_percent' => $data['discount_percent'],
             'discount_expires_at' => $data['discount_expires_at'] ?? null,
             'show_discount_countdown' => $data['show_discount_countdown'] ?? false,
+            'customer_code' => $data['customer_code'],
         ])->save();
 
-        return response()->json(['data' => $user->refresh()->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'is_active'])], 201);
+        return response()->json(['data' => $user->refresh()->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active'])], 201);
     }
 
-    public function updateUser(Request $request, User $user): JsonResponse
+    public function updateUser(Request $request, User $user, DolibarrClient $dolibarr): JsonResponse
     {
         if (! $this->isAdmin($request)) {
             return response()->json(['message' => 'Forbidden.'], 403);
@@ -188,13 +193,43 @@ class AccountController extends Controller
             'discount_expires_at' => ['sometimes', 'nullable', 'date', 'after:now'],
             'show_discount_countdown' => ['sometimes', 'boolean'],
             'is_active' => ['sometimes', 'boolean'],
+            'customer_code' => ['sometimes', 'nullable', 'string', 'max:64'],
         ]);
+        if (array_key_exists('customer_code', $data)) {
+            $data['customer_code'] = $this->checkedCustomerCode($data['customer_code'], $dolibarr);
+        }
         if ($user->id === self::user($request)->id && (($data['role'] ?? 'admin') !== 'admin' || ($data['is_active'] ?? true) === false)) {
             return response()->json(['message' => 'You cannot remove your own admin access.'], 422);
         }
         $user->forceFill($data)->save();
 
-        return response()->json(['data' => $user->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'is_active'])]);
+        return response()->json(['data' => $user->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active'])]);
+    }
+
+    /**
+     * A dealer's customer code decides which Dolibarr customer their web
+     * orders are booked against, so a typo must be caught here rather than
+     * silently sending their sales to the generic online customer.
+     */
+    private function checkedCustomerCode(?string $code, DolibarrClient $dolibarr): ?string
+    {
+        $code = trim((string) $code);
+
+        if ($code === '') {
+            return null;
+        }
+
+        try {
+            $found = $dolibarr->findCustomerByCode($code) > 0;
+        } catch (\Throwable) {
+            throw ValidationException::withMessages(['customer_code' => 'The ERP could not be reached to check this customer code. Try again.']);
+        }
+
+        if (! $found) {
+            throw ValidationException::withMessages(['customer_code' => "No Dolibarr customer has the code {$code}."]);
+        }
+
+        return $code;
     }
 
     private function isAdmin(Request $request): bool

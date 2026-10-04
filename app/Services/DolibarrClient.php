@@ -254,9 +254,30 @@ class DolibarrClient
         return $this->createDocument('invoices', $payload);
     }
 
-    public function validateInvoice(int $invoiceId): void
+    public function validateInvoice(int $invoiceId, int $warehouseId = 0): void
     {
-        $this->post('invoices/'.$invoiceId.'/validate', []);
+        $this->post('invoices/'.$invoiceId.'/validate', $warehouseId > 0 ? ['idwarehouse' => $warehouseId] : []);
+    }
+
+    /**
+     * The id of the customer third party whose customer code (code_client)
+     * is exactly $code, or 0 when there is none.
+     */
+    public function findCustomerByCode(string $code): int
+    {
+        $filter = "(t.code_client:=:'".self::escapeFilterValue($code)."')";
+
+        try {
+            $result = $this->get('thirdparties', ['limit' => 1, 'mode' => 1, 'sqlfilters' => $filter]);
+        } catch (DolibarrRequestException $exception) {
+            if ($exception->upstreamStatus === 404) {
+                return 0;
+            }
+
+            throw $exception;
+        }
+
+        return (int) ($result[0]['id'] ?? 0);
     }
 
     /**

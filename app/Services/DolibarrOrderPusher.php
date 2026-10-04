@@ -43,16 +43,16 @@ class DolibarrOrderPusher
             return true;
         }
 
-        $customerId = (int) config('dolibarr.customer_id');
-
-        if ($customerId <= 0) {
-            $this->fail($order, 'No Dolibarr customer is configured (DOLIBARR_CUSTOMER_ID), so the order was not pushed.');
-
-            return false;
-        }
-
         try {
-            $order->loadMissing('items');
+            $order->loadMissing('items', 'user');
+
+            $customerId = $this->customerFor($order);
+
+            if ($customerId <= 0) {
+                $this->fail($order, 'No Dolibarr customer is configured (DOLIBARR_CUSTOMER_ID), so the order was not pushed.');
+
+                return false;
+            }
 
             $orderId = $order->dolibarr_order_id ?? $this->createSalesOrder($order, $customerId);
             $order->update(['dolibarr_order_id' => $orderId]);
@@ -72,6 +72,31 @@ class DolibarrOrderPusher
 
             return false;
         }
+    }
+
+    /**
+     * A dealer whose account carries a Dolibarr customer code is booked
+     * against that customer, so the sale shows on their ERP account. Everyone
+     * else — and a dealer whose code matches nobody — goes to the generic
+     * online customer.
+     *
+     * @throws RuntimeException
+     */
+    private function customerFor(Order $order): int
+    {
+        $code = trim((string) $order->user?->customer_code);
+
+        if ($order->user?->role === 'dealer' && $code !== '') {
+            $dealerId = $this->dolibarr->findCustomerByCode($code);
+
+            if ($dealerId > 0) {
+                return $dealerId;
+            }
+
+            Log::warning(sprintf('[erp-push] order %s: dealer customer code %s matches no Dolibarr customer, using the online customer', $order->reference, $code));
+        }
+
+        return (int) config('dolibarr.customer_id');
     }
 
     /**
@@ -121,7 +146,7 @@ class DolibarrOrderPusher
         $this->addLines('invoices', $id, $order);
 
         // Validating is what turns a draft into a real accounting document.
-        $this->dolibarr->validateInvoice($id);
+        $this->dolibarr->validateInvoice($id, (int) config('dolibarr.warehouse_id'));
 
         return $id;
     }

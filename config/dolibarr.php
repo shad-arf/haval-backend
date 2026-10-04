@@ -22,12 +22,10 @@ return [
     'push_orders' => (bool) env('DOLIBARR_PUSH_ORDERS', false),
 
     /**
-     * The Dolibarr third party (socid) that web sales are booked against.
-     *
-     * requirements.md §2.5 asks the ERP team to choose between one third party
-     * per online customer and a single generic "Web sales" customer. This is
-     * the generic-customer option; leave it at 0 until they answer, because a
-     * push with no customer cannot succeed.
+     * The generic Dolibarr third party (socid, "ONLINECU") that web sales are
+     * booked against. A dealer whose account carries a Dolibarr customer code
+     * is booked against that customer instead — see DolibarrOrderPusher.
+     * A push with no customer cannot succeed, so 0 blocks every push.
      */
     'customer_id' => (int) env('DOLIBARR_CUSTOMER_ID', 0),
 
@@ -36,4 +34,11 @@ return [
      * ERP team to confirm whether VAT applies to online sales.
      */
     'vat_rate' => (float) env('DOLIBARR_VAT_RATE', 0),
+
+    /**
+     * Warehouse that validating a pushed invoice takes stock from. Dolibarr
+     * moves stock on invoice validation (STOCK_CALCULATE_ON_BILL), but only
+     * when it is told a warehouse; 0 validates without moving any stock.
+     */
+    'warehouse_id' => (int) env('DOLIBARR_WAREHOUSE_ID', 0),
 ];
