@@ -117,13 +117,24 @@ class DolibarrOrderPushTest extends TestCase
 
     public function test_cash_on_delivery_is_recorded_as_cash(): void
     {
+        config()->set('dolibarr.online_bank_account_id', 3);
         $this->fakeErp();
         $order = $this->paidOrder();
         $order->update(['payment_method' => Order::METHOD_COD]);
 
         $this->assertTrue(app(DolibarrOrderPusher::class)->push($order));
 
-        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/payments') && $request['paymentid'] === 4);
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/payments') && $request['paymentid'] === 4 && $request['accountid'] === 1);
+    }
+
+    public function test_card_payment_goes_to_the_online_bank_account(): void
+    {
+        config()->set('dolibarr.online_bank_account_id', 3);
+        $this->fakeErp();
+
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($this->paidOrder()));
+
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/payments') && $request['paymentid'] === 6 && $request['accountid'] === 3);
     }
 
     public function test_an_already_paid_invoice_is_not_paid_twice(): void

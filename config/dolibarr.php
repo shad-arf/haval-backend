@@ -51,8 +51,13 @@ return [
     /**
      * Bank account a pushed invoice's payment is recorded into, closing the
      * invoice as paid. 0 leaves pushed invoices validated but unpaid.
+     * Cash on delivery goes to bank_account_id; card and QR payments go to
+     * online_bank_account_id when set, because a Dolibarr cash account
+     * refuses anything but cash.
      */
     'bank_account_id' => (int) env('DOLIBARR_BANK_ACCOUNT_ID', 0),
+
+    'online_bank_account_id' => (int) env('DOLIBARR_ONLINE_BANK_ACCOUNT_ID', 0),
 
     /**
      * Dolibarr payment mode ids (llx_c_paiement) per shop payment method.

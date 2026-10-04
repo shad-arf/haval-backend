@@ -125,7 +125,7 @@ class DolibarrOrderPusher
             'datepaye' => $order->paid_at?->getTimestamp() ?? time(),
             'paymentid' => (int) config('dolibarr.payment_modes.'.$order->payment_method, config('dolibarr.payment_modes.fib_card')),
             'closepaidinvoices' => 'yes',
-            'accountid' => (int) config('dolibarr.bank_account_id'),
+            'accountid' => $this->bankAccountFor($order),
             'num_payment' => $order->reference,
             'comment' => sprintf('Web order %s, paid %s IQD (%s).', $order->reference, number_format($order->total), $this->paymentLabel($order)),
         ]);
@@ -248,6 +248,15 @@ class DolibarrOrderPusher
             $order->city,
             $this->paymentLabel($order),
         );
+    }
+
+    private function bankAccountFor(Order $order): int
+    {
+        $online = (int) config('dolibarr.online_bank_account_id');
+
+        return $order->payment_method !== Order::METHOD_COD && $online > 0
+            ? $online
+            : (int) config('dolibarr.bank_account_id');
     }
 
     private function paymentLabel(Order $order): string
