@@ -41,7 +41,7 @@ class AdminShopTest extends TestCase
     {
         $this->withToken($this->adminToken())->postJson('/api/admin/users', [
             'name' => 'Trade buyer', 'username' => 'trade_buyer', 'phone' => '07702222222', 'password' => 'secret123',
-            'role' => 'dealer', 'discount_percent' => 15,
+            'role' => 'dealer', 'dealer_profit_percentage' => 30,
             'discount_expires_at' => now()->addDay()->toISOString(), 'show_discount_countdown' => true,
         ])->assertCreated()->assertJsonPath('data.role', 'dealer')->assertJsonPath('data.show_discount_countdown', true);
 

@@ -136,7 +136,7 @@ class AccountController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        return response()->json(['data' => User::latest()->limit(200)->get(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active', 'last_login_at'])]);
+        return response()->json(['data' => User::latest()->limit(200)->get(['id', 'name', 'username', 'phone', 'role', 'dealer_profit_percentage', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active', 'last_login_at'])]);
     }
 
     public function createUser(Request $request, DolibarrClient $dolibarr): JsonResponse
@@ -155,7 +155,7 @@ class AccountController extends Controller
             'phone' => ['required', 'regex:/^[0-9]{10,15}$/', 'unique:users,phone'],
             'password' => ['required', Password::min(8)],
             'role' => ['required', 'in:customer,dealer'],
-            'discount_percent' => ['required', 'integer', 'between:0,99'],
+            'dealer_profit_percentage' => ['nullable', 'numeric', 'between:0,1000'],
             'discount_expires_at' => ['nullable', 'date', 'after:now'],
             'show_discount_countdown' => ['sometimes', 'boolean'],
             'customer_code' => ['nullable', 'string', 'max:64'],
@@ -164,13 +164,13 @@ class AccountController extends Controller
         $user = User::create(collect($data)->only(['name', 'username', 'phone', 'password'])->all());
         $user->forceFill([
             'role' => $data['role'],
-            'discount_percent' => $data['discount_percent'],
+            'dealer_profit_percentage' => $data['dealer_profit_percentage'] ?? null,
             'discount_expires_at' => $data['discount_expires_at'] ?? null,
             'show_discount_countdown' => $data['show_discount_countdown'] ?? false,
             'customer_code' => $data['customer_code'],
         ])->save();
 
-        return response()->json(['data' => $user->refresh()->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active'])], 201);
+        return response()->json(['data' => $user->refresh()->only(['id', 'name', 'username', 'phone', 'role', 'dealer_profit_percentage', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active'])], 201);
     }
 
     public function updateUser(Request $request, User $user, DolibarrClient $dolibarr): JsonResponse
@@ -189,7 +189,7 @@ class AccountController extends Controller
             'username' => ['sometimes', 'required', 'string', 'max:40', 'regex:/^[\p{L}][\p{L}\p{N}_.-]{2,39}$/u', Rule::unique('users', 'username')->ignore($user->id)],
             'phone' => ['sometimes', 'nullable', 'regex:/^[0-9]{10,15}$/', Rule::unique('users', 'phone')->ignore($user->id)],
             'role' => ['sometimes', 'in:customer,dealer,admin'],
-            'discount_percent' => ['sometimes', 'integer', 'between:0,99'],
+            'dealer_profit_percentage' => ['sometimes', 'nullable', 'numeric', 'between:0,1000'],
             'discount_expires_at' => ['sometimes', 'nullable', 'date', 'after:now'],
             'show_discount_countdown' => ['sometimes', 'boolean'],
             'is_active' => ['sometimes', 'boolean'],
@@ -203,7 +203,7 @@ class AccountController extends Controller
         }
         $user->forceFill($data)->save();
 
-        return response()->json(['data' => $user->only(['id', 'name', 'username', 'phone', 'role', 'discount_percent', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active'])]);
+        return response()->json(['data' => $user->only(['id', 'name', 'username', 'phone', 'role', 'dealer_profit_percentage', 'discount_expires_at', 'show_discount_countdown', 'customer_code', 'is_active'])]);
     }
 
     /**
@@ -289,7 +289,8 @@ class AccountController extends Controller
         }
 
         return array_merge($user->only(['id', 'name', 'username', 'phone', 'role', 'discount_expires_at', 'show_discount_countdown', 'city', 'address', 'created_at']), [
-            'discount_percent' => $user->activeDiscountPercent(),
+            // Dealer prices themselves come with each product (dealer_price).
+            'dealer_pricing' => $user->hasDealerPricing(),
         ]);
     }
 

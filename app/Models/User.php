@@ -3,6 +3,7 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Services\PricingEngine;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
@@ -29,18 +30,28 @@ class User extends Authenticatable
             'password' => 'hashed',
             'is_active' => 'boolean',
             'discount_percent' => 'integer',
+            'dealer_profit_percentage' => 'float',
             'discount_expires_at' => 'datetime',
             'show_discount_countdown' => 'boolean',
             'last_login_at' => 'datetime',
         ];
     }
 
-    public function activeDiscountPercent(): int
+    /**
+     * Whether this account buys at dealer prices right now: a dealer whose
+     * dealer pricing has not reached its end date.
+     */
+    public function hasDealerPricing(): bool
     {
-        if ($this->role !== 'dealer' || ($this->discount_expires_at && $this->discount_expires_at->isPast())) {
-            return 0;
-        }
+        return $this->role === 'dealer' && ! ($this->discount_expires_at && $this->discount_expires_at->isPast());
+    }
 
-        return $this->discount_percent;
+    /**
+     * The profit this dealer is priced at, or null when they pay customer
+     * prices. Null override means the shop-wide dealer profit.
+     */
+    public function dealerProfit(PricingEngine $pricing): ?float
+    {
+        return $this->hasDealerPricing() ? ($this->dealer_profit_percentage ?? $pricing->dealerProfitPercentage()) : null;
     }
 }

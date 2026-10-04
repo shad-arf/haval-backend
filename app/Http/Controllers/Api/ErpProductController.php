@@ -98,6 +98,21 @@ class ErpProductController extends Controller
      * @param  array<string, mixed>  $product
      * @return array<string, mixed>|null
      */
+    /**
+     * The signed-in dealer's profit, looked up once per request. Kept on the
+     * request rather than the controller, which Laravel reuses across requests.
+     */
+    private function dealerProfit(): ?float
+    {
+        $request = request();
+
+        if (! $request->attributes->has('dealer_profit')) {
+            $request->attributes->set('dealer_profit', AccountController::user($request)?->dealerProfit($this->pricing));
+        }
+
+        return $request->attributes->get('dealer_profit');
+    }
+
     private function catalogProduct(array $product): ?array
     {
         $sourceCost = $this->pricing->sourceCost($product);
@@ -112,7 +127,11 @@ class ErpProductController extends Controller
             return null;
         }
 
-        $price = $this->pricing->sellingPrice($this->pricing->costInUsd($sourceCost), $override?->profit_percentage);
+        $costUsd = $this->pricing->costInUsd($sourceCost);
+        $price = $this->pricing->sellingPrice($costUsd, $override?->profit_percentage);
+        // Only a signed-in dealer is told their price; the response is
+        // private (no shared cache), so it never reaches anyone else.
+        $dealerProfit = $this->dealerProfit();
         $ref = (string) ($product['ref'] ?? '');
         $description = trim(strip_tags((string) ($product['description'] ?? '')));
         $shortDescription = trim(strip_tags((string) ($product['note_public'] ?? '')));
@@ -124,6 +143,7 @@ class ErpProductController extends Controller
             'description' => $override?->description ?? $description,
             'short_description' => $shortDescription,
             'price' => $price,
+            'dealer_price' => $dealerProfit === null ? null : $this->pricing->dealerPrice($costUsd, $override?->profit_percentage, $dealerProfit),
             'currency' => 'IQD',
             'stock_quantity' => $quantity,
             'stock_status' => $this->pricing->stockStatus($quantity),

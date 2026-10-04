@@ -94,6 +94,7 @@ class AdminShopController extends Controller
                 'stock_quantity' => $stockQuantity,
                 'stock_status' => $this->pricing->stockStatus($stockQuantity),
                 'price' => $cost > 0 ? (int) $this->pricing->sellingPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
+                'dealer_price' => $cost > 0 ? (int) $this->pricing->dealerPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
                 'is_hidden' => $isHidden,
                 'profit_percentage' => $override?->profit_percentage,
                 'display_name' => $override?->display_name,
@@ -188,6 +189,7 @@ class AdminShopController extends Controller
             'stock_quantity' => $stockQuantity,
             'stock_status' => $this->pricing->stockStatus($stockQuantity),
             'price' => $cost > 0 ? (int) $this->pricing->sellingPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
+            'dealer_price' => $cost > 0 ? (int) $this->pricing->dealerPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
             'has_cost' => $cost > 0,
             'is_hidden' => $isHidden,
             'profit_percentage' => $override?->profit_percentage,
@@ -401,7 +403,7 @@ class AdminShopController extends Controller
         }
 
         return response()->json(['data' => array_merge(
-            collect(config('shop'))->only(['profit_percentage', 'usd_iqd_rate', 'rounding_increment', 'low_stock_threshold'])->all(),
+            collect(config('shop'))->only(['profit_percentage', 'dealer_profit_percentage', 'usd_iqd_rate', 'rounding_increment', 'low_stock_threshold'])->all(),
             DB::table('shop_settings')->pluck('value', 'key')->all(),
             SiteSettings::all(),
         )]);
@@ -415,6 +417,7 @@ class AdminShopController extends Controller
 
         $data = $request->validate([
             'profit_percentage' => ['sometimes', 'numeric', 'between:0,1000'],
+            'dealer_profit_percentage' => ['sometimes', 'numeric', 'between:0,1000'],
             'usd_iqd_rate' => ['sometimes', 'numeric', 'between:1,100000'],
             'rounding_increment' => ['sometimes', 'integer', 'between:1,100000'],
             'low_stock_threshold' => ['sometimes', 'numeric', 'between:0,100000'],

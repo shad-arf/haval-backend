@@ -17,6 +17,13 @@ return [
 
     'profit_percentage' => (float) env('SHOP_PROFIT_PERCENTAGE', 25),
 
+    /*
+     * Dealers pay cost + this profit, worked up from cost — not a discount off
+     * the customer price (25% off a 50%-profit price would be ~12.5% profit).
+     * A dealer's own dealer_profit_percentage overrides it.
+     */
+    'dealer_profit_percentage' => (float) env('SHOP_DEALER_PROFIT_PERCENTAGE', 25),
+
     'usd_iqd_rate' => (float) env('SHOP_USD_IQD_RATE', 1320),
 
     /**

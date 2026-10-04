@@ -33,16 +33,9 @@ class CheckoutService
      */
     public function placeOrder(array $lines, array $customer, string $paymentMethod, ?User $account = null): Order
     {
-        $priced = $this->priceLines($lines);
-
-        $discountPercent = $account?->activeDiscountPercent() ?? 0;
-        if ($discountPercent > 0) {
-            foreach ($priced as &$line) {
-                $line['unit_price'] = (int) $this->pricing->roundUp($line['unit_price'] * (100 - $discountPercent) / 100);
-                $line['line_total'] = $line['unit_price'] * $line['quantity'];
-            }
-            unset($line);
-        }
+        // A dealer is priced up from cost at the dealer profit, not discounted
+        // down from the customer price — see PricingEngine::dealerPrice.
+        $priced = $this->priceLines($lines, $account?->dealerProfit($this->pricing));
 
         if ($priced === []) {
             throw new CheckoutException('Your cart is empty.');
@@ -83,7 +76,7 @@ class CheckoutService
      *
      * @throws CheckoutException
      */
-    private function priceLines(array $lines): array
+    private function priceLines(array $lines, ?float $dealerProfit = null): array
     {
         $priced = [];
         $unavailable = [];
@@ -124,7 +117,10 @@ class CheckoutService
                 ));
             }
 
-            $unitPrice = (int) $this->pricing->sellingPrice($this->pricing->costInUsd($cost), $override?->profit_percentage);
+            $costUsd = $this->pricing->costInUsd($cost);
+            $unitPrice = (int) ($dealerProfit === null
+                ? $this->pricing->sellingPrice($costUsd, $override?->profit_percentage)
+                : $this->pricing->dealerPrice($costUsd, $override?->profit_percentage, $dealerProfit));
 
             $priced[] = [
                 'erp_product_id' => (int) ($product['id'] ?? $productId),

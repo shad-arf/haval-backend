@@ -17,6 +17,8 @@ class PricingEngine
 
     private readonly float $usdIqdRate;
 
+    private readonly float $dealerProfitPercentage;
+
     private readonly float $roundingIncrement;
 
     private readonly string $costCurrency;
@@ -33,6 +35,7 @@ class PricingEngine
 
         $this->profitPercentage = max(0.0, min(1000.0, (float) ($settings['profit_percentage'] ?? 25)));
         $this->usdIqdRate = max(1.0, (float) ($settings['usd_iqd_rate'] ?? 1320));
+        $this->dealerProfitPercentage = max(0.0, min(1000.0, (float) ($settings['dealer_profit_percentage'] ?? 25)));
         $this->roundingIncrement = max(1.0, (float) ($settings['rounding_increment'] ?? 250));
         $this->costCurrency = strtoupper((string) ($settings['cost_currency'] ?? 'USD')) === 'IQD' ? 'IQD' : 'USD';
         $this->lowStockThreshold = max(0.0, (float) ($settings['low_stock_threshold'] ?? 5));
@@ -108,6 +111,24 @@ class PricingEngine
     /**
      * Round a price up to the configured increment, never below zero.
      */
+    /**
+     * What a dealer pays: cost + dealer profit, rounded like every shelf price.
+     * Never more than the customer price, so a part whose own profit override
+     * is below the dealer profit simply sells to dealers at the customer price.
+     */
+    public function dealerPrice(float $costUsd, ?float $customerProfitOverride, ?float $dealerProfit = null): float
+    {
+        return min(
+            $this->sellingPrice($costUsd, $dealerProfit ?? $this->dealerProfitPercentage),
+            $this->sellingPrice($costUsd, $customerProfitOverride),
+        );
+    }
+
+    public function dealerProfitPercentage(): float
+    {
+        return $this->dealerProfitPercentage;
+    }
+
     public function roundUp(float $price): float
     {
         return ceil(max(0.0, $price) / $this->roundingIncrement) * $this->roundingIncrement;

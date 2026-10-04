@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Order;
+use App\Models\ProductOverride;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -94,39 +95,71 @@ class CheckoutApiTest extends TestCase
             ->assertJsonPath('data.total', 22000);
     }
 
-    public function test_dealer_discount_is_applied_to_server_priced_lines(): void
+    /** The owner's example: a $10 part, customers +50%, dealers +25%, 1,500 IQD/USD. */
+    private function dealerPricingSetup(): void
     {
-        $this->fakeErp($this->erpProduct());
-        $dealer = User::factory()->create(['role' => 'dealer', 'discount_percent' => 10]);
-        $token = 'dealer-test-token';
-        $dealer->forceFill(['api_token_hash' => hash('sha256', $token)])->save();
-
-        // 11,000 * 0.9 = 9,900 -> rounds up to the nearest 250, same as every other shelf price.
-        $this->withToken($token)->postJson('/api/checkout', $this->checkoutPayload())
-            ->assertCreated()
-            ->assertJsonPath('data.items.0.unit_price', 10000)
-            ->assertJsonPath('data.total', 20000);
-
-        $this->assertDatabaseHas('orders', ['user_id' => $dealer->id, 'total' => 20000]);
+        config()->set('shop.profit_percentage', 50);
+        config()->set('shop.dealer_profit_percentage', 25);
+        config()->set('shop.usd_iqd_rate', 1500);
+        $this->fakeErp($this->erpProduct(['cost_price' => 10]));
     }
 
-    public function test_expired_dealer_discount_is_not_applied_and_checkout_saves_address(): void
+    public function test_dealer_is_priced_up_from_cost_not_discounted_from_the_customer_price(): void
     {
-        $this->fakeErp($this->erpProduct());
-        $dealer = User::factory()->create([
-            'role' => 'dealer', 'discount_percent' => 10,
-            'discount_expires_at' => now()->subMinute(),
-        ]);
+        $this->dealerPricingSetup();
+        $dealer = User::factory()->create(['role' => 'dealer']);
+        $dealer->forceFill(['api_token_hash' => hash('sha256', 'dealer-test-token')])->save();
+
+        // Customer: $10 + 50% = $15 = 22,500 IQD. Dealer: $10 + 25% = $12.50 = 18,750 IQD —
+        // not 25% off 22,500 (16,875), which would leave only ~12.5% profit.
+        $this->getJson('/api/products/19902')->assertOk()->assertJsonPath('price', 22500)->assertJsonPath('dealer_price', null);
+        $this->withToken('dealer-test-token')->getJson('/api/products/19902')->assertOk()
+            ->assertJsonPath('price', 22500)->assertJsonPath('dealer_price', 18750);
+
+        $this->withToken('dealer-test-token')->postJson('/api/checkout', $this->checkoutPayload())
+            ->assertCreated()
+            ->assertJsonPath('data.items.0.unit_price', 18750)
+            ->assertJsonPath('data.total', 37500);
+        $this->assertDatabaseHas('orders', ['user_id' => $dealer->id, 'total' => 37500]);
+    }
+
+    public function test_a_dealers_own_profit_overrides_the_default(): void
+    {
+        $this->dealerPricingSetup();
+        $dealer = User::factory()->create(['role' => 'dealer']);
+        $dealer->forceFill(['dealer_profit_percentage' => 40, 'api_token_hash' => hash('sha256', 'dealer-test-token')])->save();
+
+        // $10 + 40% = $14 = 21,000 IQD.
+        $this->withToken('dealer-test-token')->getJson('/api/products/19902')->assertJsonPath('dealer_price', 21000);
+    }
+
+    public function test_dealer_price_never_exceeds_the_customer_price(): void
+    {
+        $this->dealerPricingSetup();
+        ProductOverride::create(['erp_product_id' => 19902, 'profit_percentage' => 10]);
+        $dealer = User::factory()->create(['role' => 'dealer']);
+        $dealer->forceFill(['api_token_hash' => hash('sha256', 'dealer-test-token')])->save();
+
+        // This part's own customer profit (10%) is below the dealer profit (25%).
+        $this->withToken('dealer-test-token')->getJson('/api/products/19902')
+            ->assertJsonPath('price', 16500)->assertJsonPath('dealer_price', 16500);
+    }
+
+    public function test_expired_dealer_pricing_is_not_applied_and_checkout_saves_address(): void
+    {
+        $this->dealerPricingSetup();
+        $dealer = User::factory()->create(['role' => 'dealer', 'discount_expires_at' => now()->subMinute()]);
         $token = 'expired-dealer-token';
         $dealer->forceFill(['api_token_hash' => hash('sha256', $token)])->save();
 
+        $this->withToken($token)->getJson('/api/products/19902')->assertJsonPath('dealer_price', null);
         $this->withToken($token)->postJson('/api/checkout', $this->checkoutPayload())
-            ->assertCreated()->assertJsonPath('data.total', 22000);
+            ->assertCreated()->assertJsonPath('data.total', 45000);
 
         $this->assertDatabaseHas('users', [
             'id' => $dealer->id, 'city' => 'Erbil', 'address' => 'Industrial Area',
         ]);
-        $this->withToken($token)->getJson('/api/account')->assertJsonPath('data.discount_percent', 0);
+        $this->withToken($token)->getJson('/api/account')->assertJsonPath('data.dealer_pricing', false);
     }
 
     public function test_duplicate_cart_lines_for_one_part_are_merged(): void
