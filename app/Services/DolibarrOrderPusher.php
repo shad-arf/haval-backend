@@ -203,7 +203,9 @@ class DolibarrOrderPusher
         $this->addLines('invoices', $id, $order);
 
         // Validating is what turns a draft into a real accounting document.
-        $this->dolibarr->validateInvoice($id, (int) config('dolibarr.warehouse_id'));
+        // The ERP invoice carries the web order number (WEB-000010) so the two
+        // systems name the sale the same way; it stays outside the FA sequence.
+        $this->dolibarr->validateInvoice($id, (int) config('dolibarr.warehouse_id'), $order->reference);
 
         return $id;
     }

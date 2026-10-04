@@ -254,9 +254,16 @@ class DolibarrClient
         return $this->createDocument('invoices', $payload);
     }
 
-    public function validateInvoice(int $invoiceId, int $warehouseId = 0): void
+    /**
+     * Validates a draft invoice. $number, when given, becomes the invoice ref
+     * in place of the next number from Dolibarr's own sequence.
+     */
+    public function validateInvoice(int $invoiceId, int $warehouseId = 0, string $number = ''): void
     {
-        $this->post('invoices/'.$invoiceId.'/validate', $warehouseId > 0 ? ['idwarehouse' => $warehouseId] : []);
+        $this->post('invoices/'.$invoiceId.'/validate', array_filter([
+            'idwarehouse' => $warehouseId,
+            'force_number' => $number,
+        ]));
     }
 
     /**

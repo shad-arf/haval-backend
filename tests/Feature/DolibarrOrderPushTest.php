@@ -83,7 +83,8 @@ class DolibarrOrderPushTest extends TestCase
 
         $this->assertSame(self::ONLINE_CUSTOMER, $this->bookedCustomer());
         $this->assertDatabaseHas('orders', ['id' => $order->id, 'dolibarr_order_id' => 501, 'dolibarr_invoice_id' => 601, 'dolibarr_error' => null]);
-        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/601/validate') && $request['idwarehouse'] === 6);
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/601/validate')
+            && $request['idwarehouse'] === 6 && $request['force_number'] === 'WEB-777777');
     }
 
     public function test_lines_are_written_in_the_erp_currency_not_iqd(): void
