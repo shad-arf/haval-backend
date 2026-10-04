@@ -40,6 +40,26 @@ class PricingEngine
     }
 
     /**
+     * An IQD shop amount in the ERP's own currency, for writing documents
+     * back to Dolibarr. Its books are kept in the cost currency, so a USD ERP
+     * gets the amount converted at the shop's rate.
+     */
+    public function toErpCurrency(float $iqd): float
+    {
+        return $this->costCurrency === 'IQD' ? $iqd : round($iqd / $this->usdIqdRate, 2);
+    }
+
+    public function usdIqdRate(): float
+    {
+        return $this->usdIqdRate;
+    }
+
+    public function erpCurrency(): string
+    {
+        return $this->costCurrency;
+    }
+
+    /**
      * Read the ERP cost from a Dolibarr product payload.
      *
      * Dolibarr fills `cost_price` on every product here, but older records only

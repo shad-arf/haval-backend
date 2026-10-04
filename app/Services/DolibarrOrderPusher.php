@@ -23,7 +23,10 @@ use Throwable;
  */
 class DolibarrOrderPusher
 {
-    public function __construct(private readonly DolibarrClient $dolibarr) {}
+    public function __construct(
+        private readonly DolibarrClient $dolibarr,
+        private readonly PricingEngine $pricing,
+    ) {}
 
     public function enabled(): bool
     {
@@ -180,6 +183,7 @@ class DolibarrOrderPusher
     private function addLines(string $endpoint, int $documentId, Order $order): void
     {
         $existing = $this->dolibarr->documentLineMarkers($endpoint, $documentId);
+        $rate = $this->pricing->erpCurrency() === 'IQD' ? '' : sprintf(' @ %s IQD/USD', $this->pricing->usdIqdRate());
 
         foreach ($order->items as $item) {
             $marker = sprintf('[%s-ITEM-%d]', $order->reference, $item->id);
@@ -189,9 +193,10 @@ class DolibarrOrderPusher
             }
 
             $this->dolibarr->addDocumentLine($endpoint, $documentId, [
-                'desc' => sprintf('%s %s | %s | %d IQD', $marker, $item->ref, $item->name, $item->unit_price),
+                'desc' => sprintf('%s %s | %s | %d IQD%s', $marker, $item->ref, $item->name, $item->unit_price, $rate),
                 'qty' => $item->quantity,
-                'subprice' => $item->unit_price,
+                // Shop prices are IQD; the ERP keeps its books in USD.
+                'subprice' => $this->pricing->toErpCurrency($item->unit_price),
                 'tva_tx' => (float) config('dolibarr.vat_rate'),
                 'fk_product' => $item->erp_product_id,
             ]);
@@ -201,8 +206,9 @@ class DolibarrOrderPusher
     private function note(Order $order): string
     {
         return sprintf(
-            'Web order %s. Customer: %s. Phone: %s. City: %s. Payment: %s.',
+            'Web order %s. Paid %s IQD. Customer: %s. Phone: %s. City: %s. Payment: %s.',
             $order->reference,
+            number_format($order->total),
             $order->customer_name,
             $order->customer_phone,
             $order->city,

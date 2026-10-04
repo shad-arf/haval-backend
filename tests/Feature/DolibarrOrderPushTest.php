@@ -83,6 +83,21 @@ class DolibarrOrderPushTest extends TestCase
         Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/601/validate') && $request['idwarehouse'] === 6);
     }
 
+    public function test_lines_are_written_in_the_erp_currency_not_iqd(): void
+    {
+        config()->set('shop.usd_iqd_rate', 1320);
+        $this->fakeErp();
+        $order = $this->paidOrder();
+        $order->items()->create(['erp_product_id' => 42, 'ref' => 'PART-42', 'name' => 'Part', 'unit_price' => 21500, 'quantity' => 2, 'line_total' => 43000]);
+
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($order));
+
+        // 21,500 IQD at 1,320 IQD/USD — never a $21,500 line.
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/601/lines')
+            && $request['subprice'] === 16.29 && $request['qty'] === 2 && $request['fk_product'] === 42
+            && str_contains($request['desc'], '21500 IQD @ 1320 IQD/USD'));
+    }
+
     public function test_dealer_order_is_booked_against_their_matching_dolibarr_customer(): void
     {
         $this->fakeErp();
