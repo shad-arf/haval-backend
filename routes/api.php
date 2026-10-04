@@ -21,6 +21,7 @@ Route::get('/admin/summary', [AdminShopController::class, 'summary']);
 Route::get('/admin/users', [AccountController::class, 'adminUsers']);
 Route::patch('/admin/users/{user}', [AccountController::class, 'updateUser']);
 Route::post('/admin/users', [AccountController::class, 'createUser']);
+Route::post('/admin/users/{user}/password', [AccountController::class, 'resetPassword']);
 Route::get('/admin/products', [AdminShopController::class, 'products']);
 Route::get('/admin/products/{id}', [AdminShopController::class, 'showProduct'])->whereNumber('id');
 Route::patch('/admin/products/{id}', [AdminShopController::class, 'updateProduct'])->whereNumber('id');

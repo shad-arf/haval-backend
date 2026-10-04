@@ -207,6 +207,43 @@ class AccountController extends Controller
     }
 
     /**
+     * Set a new temporary password for an account. Passwords are stored as
+     * one-way hashes, so an admin can never see an existing one — instead a
+     * new one is typed or generated here and returned exactly once. The
+     * account is signed out so the old password's session stops working.
+     */
+    public function resetPassword(Request $request, User $user): JsonResponse
+    {
+        if (! $this->isAdmin($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        if ($user->id === self::user($request)->id) {
+            return response()->json(['message' => 'Change your own password from your account page.'], 422);
+        }
+
+        $data = $request->validate(['password' => ['nullable', 'string', Password::min(8)]]);
+        $password = ($data['password'] ?? '') !== '' ? $data['password'] : self::temporaryPassword();
+
+        $user->forceFill(['password' => $password, 'api_token_hash' => null])->save();
+
+        return response()->json(['data' => ['id' => $user->id, 'username' => $user->username, 'password' => $password]]);
+    }
+
+    /** Easy to read out over the phone: no 0/O, 1/l/I look-alikes. */
+    private static function temporaryPassword(): string
+    {
+        $alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+        $password = '';
+
+        for ($i = 0; $i < 10; $i++) {
+            $password .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+        }
+
+        return $password;
+    }
+
+    /**
      * A dealer's customer code decides which Dolibarr customer their web
      * orders are booked against, so a typo must be caught here rather than
      * silently sending their sales to the generic online customer.

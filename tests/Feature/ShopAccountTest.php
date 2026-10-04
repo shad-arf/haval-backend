@@ -146,4 +146,33 @@ class ShopAccountTest extends TestCase
 
         $this->postJson('/api/login', ['identifier' => 'wrong_guesser', 'password' => 'secret123'])->assertOk();
     }
+
+    public function test_admin_can_reset_a_customer_password_and_sign_them_out(): void
+    {
+        User::factory()->create(['role' => 'admin', 'api_token_hash' => hash('sha256', 'admin-token')]);
+        $customer = User::factory()->create(['username' => 'reset_me', 'password' => 'old-password', 'api_token_hash' => hash('sha256', 'customer-token')]);
+
+        $generated = $this->withToken('admin-token')->postJson("/api/admin/users/{$customer->id}/password")
+            ->assertOk()->json('data.password');
+
+        $this->assertMatchesRegularExpression('/^[a-zA-Z2-9]{10}$/', $generated);
+        $this->assertNull($customer->fresh()->api_token_hash);
+        $this->postJson('/api/login', ['identifier' => 'reset_me', 'password' => 'old-password'])->assertStatus(422);
+        $this->postJson('/api/login', ['identifier' => 'reset_me', 'password' => $generated])->assertOk();
+
+        $this->withToken('admin-token')->postJson("/api/admin/users/{$customer->id}/password", ['password' => 'chosen-pass'])
+            ->assertOk()->assertJsonPath('data.password', 'chosen-pass');
+        $this->postJson('/api/login', ['identifier' => 'reset_me', 'password' => 'chosen-pass'])->assertOk();
+    }
+
+    public function test_only_admins_reset_passwords_and_not_their_own(): void
+    {
+        $admin = User::factory()->create(['role' => 'admin', 'api_token_hash' => hash('sha256', 'admin-token')]);
+        $customer = User::factory()->create(['api_token_hash' => hash('sha256', 'customer-token')]);
+        $other = User::factory()->create();
+
+        $this->withToken('customer-token')->postJson("/api/admin/users/{$other->id}/password")->assertForbidden();
+        $this->withToken('admin-token')->postJson("/api/admin/users/{$admin->id}/password")->assertUnprocessable();
+        $this->withToken('admin-token')->postJson("/api/admin/users/{$customer->id}/password", ['password' => 'short'])->assertUnprocessable();
+    }
 }
