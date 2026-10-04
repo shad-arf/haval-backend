@@ -36,7 +36,8 @@ class DolibarrOrderPusher
     /**
      * Push an order, swallowing any failure into the order's error column.
      *
-     * Returns true when the ERP holds both documents at the end of the call.
+     * Returns true when the ERP holds every document (and the payment) at the
+     * end of the call.
      */
     public function push(Order $order): bool
     {
@@ -44,7 +45,7 @@ class DolibarrOrderPusher
             return false;
         }
 
-        if ($order->dolibarr_invoice_id !== null && ($order->dolibarr_order_id !== null || ! $this->pushesSalesOrders())) {
+        if ($order->isErpSynced()) {
             return true;
         }
 
@@ -67,11 +68,14 @@ class DolibarrOrderPusher
             }
 
             $invoiceId = $order->dolibarr_invoice_id ?? $this->createInvoice($order, $customerId);
-            $order->update([
-                'dolibarr_invoice_id' => $invoiceId,
-                'dolibarr_synced_at' => now(),
-                'dolibarr_error' => null,
-            ]);
+            $order->update(['dolibarr_invoice_id' => $invoiceId]);
+
+            if ($order->dolibarr_paid_at === null && $this->recordsPayments()) {
+                $this->recordPayment($order, $invoiceId);
+                $order->update(['dolibarr_paid_at' => now()]);
+            }
+
+            $order->update(['dolibarr_synced_at' => now(), 'dolibarr_error' => null]);
 
             Log::info(sprintf('[erp-push] order %s -> Dolibarr order %s, invoice %d', $order->reference, $orderId ?? 'skipped', $invoiceId));
 
@@ -95,6 +99,36 @@ class DolibarrOrderPusher
     private function pushesSalesOrders(): bool
     {
         return (bool) config('dolibarr.push_sales_orders');
+    }
+
+    private function recordsPayments(): bool
+    {
+        return (int) config('dolibarr.bank_account_id') > 0;
+    }
+
+    /**
+     * Only paid orders are pushed, so the invoice is settled in full and
+     * closed as paid. A retry first asks what is still owed, so a payment
+     * that landed before a timeout is never recorded twice.
+     *
+     * @throws RuntimeException
+     */
+    private function recordPayment(Order $order, int $invoiceId): void
+    {
+        $invoice = $this->dolibarr->invoice($invoiceId);
+
+        if ((int) ($invoice['paye'] ?? 0) === 1 || (float) ($invoice['remaintopay'] ?? 1) <= 0) {
+            return;
+        }
+
+        $this->dolibarr->addInvoicePayment($invoiceId, [
+            'datepaye' => $order->paid_at?->getTimestamp() ?? time(),
+            'paymentid' => (int) config('dolibarr.payment_modes.'.$order->payment_method, config('dolibarr.payment_modes.fib_card')),
+            'closepaidinvoices' => 'yes',
+            'accountid' => (int) config('dolibarr.bank_account_id'),
+            'num_payment' => $order->reference,
+            'comment' => sprintf('Web order %s, paid %s IQD (%s).', $order->reference, number_format($order->total), $this->paymentLabel($order)),
+        ]);
     }
 
     /**
@@ -212,12 +246,17 @@ class DolibarrOrderPusher
             $order->customer_name,
             $order->customer_phone,
             $order->city,
-            match ($order->payment_method) {
-                Order::METHOD_COD => 'Cash on delivery',
-                Order::METHOD_FIB_QR => 'FIB QR',
-                default => 'Bank card',
-            },
+            $this->paymentLabel($order),
         );
+    }
+
+    private function paymentLabel(Order $order): string
+    {
+        return match ($order->payment_method) {
+            Order::METHOD_COD => 'Cash on delivery',
+            Order::METHOD_FIB_QR => 'FIB QR',
+            default => 'Bank card',
+        };
     }
 
     private function fail(Order $order, string $message): void

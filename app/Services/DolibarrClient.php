@@ -260,6 +260,26 @@ class DolibarrClient
     }
 
     /**
+     * One invoice, including the amount still owed (remaintopay).
+     *
+     * @return array<string, mixed>
+     */
+    public function invoice(int $invoiceId): array
+    {
+        return $this->get('invoices/'.$invoiceId);
+    }
+
+    /**
+     * Pays the whole remaining balance of an invoice; returns the payment id.
+     *
+     * @param  array<string, mixed>  $payment
+     */
+    public function addInvoicePayment(int $invoiceId, array $payment): int
+    {
+        return (int) $this->post('invoices/'.$invoiceId.'/payments', $payment);
+    }
+
+    /**
      * The id of the customer third party whose customer code (code_client)
      * is exactly $code, or 0 when there is none.
      */

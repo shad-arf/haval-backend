@@ -137,6 +137,7 @@ class Order extends Model
             'paid_at' => 'datetime',
             'fulfilment_updated_at' => 'datetime',
             'dolibarr_synced_at' => 'datetime',
+            'dolibarr_paid_at' => 'datetime',
             'dolibarr_order_id' => 'integer',
             'dolibarr_invoice_id' => 'integer',
         ];
@@ -148,6 +149,18 @@ class Order extends Model
     public function items(): HasMany
     {
         return $this->hasMany(OrderItem::class);
+    }
+
+    /**
+     * Whether every ERP step the current configuration asks for is done:
+     * the invoice, the sales order when those are pushed, and the payment
+     * when a bank account is configured.
+     */
+    public function isErpSynced(): bool
+    {
+        return $this->dolibarr_invoice_id !== null
+            && ($this->dolibarr_order_id !== null || ! config('dolibarr.push_sales_orders'))
+            && ($this->dolibarr_paid_at !== null || (int) config('dolibarr.bank_account_id') <= 0);
     }
 
     /**

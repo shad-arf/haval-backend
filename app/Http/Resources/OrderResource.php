@@ -80,7 +80,9 @@ class OrderResource extends JsonResource
                 'enabled' => (bool) config('dolibarr.push_orders'),
                 'order_id' => $this->dolibarr_order_id,
                 'invoice_id' => $this->dolibarr_invoice_id,
-                'synced_at' => $this->dolibarr_synced_at?->toIso8601String(),
+                'payment_recorded_at' => $this->dolibarr_paid_at?->toIso8601String(),
+                // Null until every configured step — including the payment — is done.
+                'synced_at' => $this->isErpSynced() ? $this->dolibarr_synced_at?->toIso8601String() : null,
                 'error' => $this->dolibarr_error,
             ],
         ];

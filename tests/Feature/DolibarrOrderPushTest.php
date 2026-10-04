@@ -27,12 +27,13 @@ class DolibarrOrderPushTest extends TestCase
         config()->set('dolibarr.push_orders', true);
         config()->set('dolibarr.customer_id', self::ONLINE_CUSTOMER);
         config()->set('dolibarr.warehouse_id', 6);
+        config()->set('dolibarr.bank_account_id', 1);
     }
 
     /** Fakes an empty ERP that knows one dealer, CU2609-00412. */
-    private function fakeErp(): void
+    private function fakeErp(float $remainToPay = 14.34): void
     {
-        Http::fake(function (Request $request) {
+        Http::fake(function (Request $request) use ($remainToPay) {
             $path = parse_url($request->url(), PHP_URL_PATH);
             $query = urldecode((string) parse_url($request->url(), PHP_URL_QUERY));
 
@@ -45,6 +46,8 @@ class DolibarrOrderPushTest extends TestCase
                 $request->method() === 'POST' && str_ends_with($path, '/invoices') => Http::response('601'),
                 str_ends_with($path, '/lines') => Http::response('1'),
                 str_ends_with($path, '/validate') => Http::response(['ok' => true]),
+                str_ends_with($path, '/payments') => Http::response('77'),
+                str_ends_with($path, '/invoices/601') => Http::response(['lines' => [], 'paye' => $remainToPay > 0 ? 0 : 1, 'remaintopay' => $remainToPay]),
                 default => Http::response(['lines' => []]),
             };
         });
@@ -98,6 +101,66 @@ class DolibarrOrderPushTest extends TestCase
             && str_contains($request['desc'], '21500 IQD @ 1320 IQD/USD'));
     }
 
+    public function test_paid_order_closes_its_invoice_with_a_payment(): void
+    {
+        $this->fakeErp();
+        $order = $this->paidOrder();
+
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($order));
+
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/601/payments')
+            && $request['paymentid'] === 6 && $request['accountid'] === 1
+            && $request['closepaidinvoices'] === 'yes' && $request['num_payment'] === 'WEB-777777');
+        $this->assertNotNull($order->fresh()->dolibarr_paid_at);
+        $this->assertTrue($order->fresh()->isErpSynced());
+    }
+
+    public function test_cash_on_delivery_is_recorded_as_cash(): void
+    {
+        $this->fakeErp();
+        $order = $this->paidOrder();
+        $order->update(['payment_method' => Order::METHOD_COD]);
+
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($order));
+
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/payments') && $request['paymentid'] === 4);
+    }
+
+    public function test_an_already_paid_invoice_is_not_paid_twice(): void
+    {
+        $this->fakeErp(remainToPay: 0);
+        $order = $this->paidOrder();
+        // A previous push created the invoice and its payment landed, but the response was lost.
+        $order->update(['dolibarr_invoice_id' => 601, 'dolibarr_synced_at' => now()]);
+
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($order));
+
+        Http::assertNotSent(fn (Request $request) => str_ends_with($request->url(), '/payments'));
+        $this->assertNotNull($order->fresh()->dolibarr_paid_at);
+    }
+
+    public function test_an_invoice_pushed_before_payments_were_enabled_gets_its_payment(): void
+    {
+        $this->fakeErp();
+        $order = $this->paidOrder();
+        $order->update(['dolibarr_invoice_id' => 601, 'dolibarr_synced_at' => now()]);
+
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($order));
+
+        Http::assertNotSent(fn (Request $request) => $request->method() === 'POST' && str_ends_with($request->url(), '/invoices'));
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/601/payments'));
+    }
+
+    public function test_no_payment_is_recorded_without_a_bank_account(): void
+    {
+        config()->set('dolibarr.bank_account_id', 0);
+        $this->fakeErp();
+
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($this->paidOrder()));
+
+        Http::assertNotSent(fn (Request $request) => str_ends_with($request->url(), '/payments'));
+    }
+
     public function test_dealer_order_is_booked_against_their_matching_dolibarr_customer(): void
     {
         $this->fakeErp();
@@ -131,8 +194,8 @@ class DolibarrOrderPushTest extends TestCase
 
         $this->assertDatabaseHas('orders', ['id' => $order->id, 'dolibarr_order_id' => null, 'dolibarr_invoice_id' => 601]);
         Http::assertNotSent(fn (Request $request) => str_contains(parse_url($request->url(), PHP_URL_PATH), '/orders'));
-        // find, create, read lines, validate — and nothing on the second push.
-        Http::assertSentCount(4);
+        // find, create, read lines, validate, read balance, pay — and nothing on the second push.
+        Http::assertSentCount(6);
     }
 
     public function test_admin_cannot_save_a_customer_code_dolibarr_does_not_know(): void

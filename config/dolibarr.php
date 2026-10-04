@@ -47,4 +47,20 @@ return [
      * when it is told a warehouse; 0 validates without moving any stock.
      */
     'warehouse_id' => (int) env('DOLIBARR_WAREHOUSE_ID', 0),
+
+    /**
+     * Bank account a pushed invoice's payment is recorded into, closing the
+     * invoice as paid. 0 leaves pushed invoices validated but unpaid.
+     */
+    'bank_account_id' => (int) env('DOLIBARR_BANK_ACCOUNT_ID', 0),
+
+    /**
+     * Dolibarr payment mode ids (llx_c_paiement) per shop payment method.
+     * The defaults are Dolibarr's stock ids: 6 CB, 2 VIR, 4 LIQ.
+     */
+    'payment_modes' => [
+        'fib_card' => (int) env('DOLIBARR_PAYMENT_MODE_CARD', 6),
+        'fib_qr' => (int) env('DOLIBARR_PAYMENT_MODE_QR', 2),
+        'cod' => (int) env('DOLIBARR_PAYMENT_MODE_CASH', 4),
+    ],
 ];
