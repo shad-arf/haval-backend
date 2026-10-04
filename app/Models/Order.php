@@ -75,6 +75,9 @@ class Order extends Model
 
     public const FULFILMENT_RETURNED = 'returned';
 
+    /** What the admin order page needs loaded. */
+    public const ADMIN_RELATIONS = ['items', 'returns.items.orderItem'];
+
     /**
      * Every stage an order may be set to, in the order they are shown.
      * `returned` sits outside the forward chain — see FULFILMENT_CHAIN.
@@ -161,6 +164,14 @@ class Order extends Model
         return $this->dolibarr_invoice_id !== null
             && ($this->dolibarr_order_id !== null || ! config('dolibarr.push_sales_orders'))
             && ($this->dolibarr_paid_at !== null || (int) config('dolibarr.bank_account_id') <= 0);
+    }
+
+    /**
+     * @return HasMany<OrderReturn, $this>
+     */
+    public function returns(): HasMany
+    {
+        return $this->hasMany(OrderReturn::class);
     }
 
     /**

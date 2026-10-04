@@ -43,14 +43,37 @@ class OrderResource extends JsonResource
                 'notes' => $this->notes,
             ],
 
-            'items' => $this->items->map(static fn ($item): array => [
+            'items' => $this->items->map(fn ($item): array => [
+                'id' => $item->id,
                 'product_id' => $item->erp_product_id,
                 'ref' => $item->ref,
                 'name' => $item->name,
                 'unit_price' => $item->unit_price,
                 'quantity' => $item->quantity,
                 'line_total' => $item->line_total,
+                // Admin only: the returns relation is loaded on admin responses.
+                'returned_quantity' => $this->whenLoaded('returns', fn () => (int) $this->returns
+                    ->flatMap->items->where('order_item_id', $item->id)->sum('quantity')),
             ])->all(),
+
+            'returns' => $this->whenLoaded('returns', fn () => $this->returns->map(static fn ($return): array => [
+                'reference' => $return->reference,
+                'total' => $return->total,
+                'reason' => $return->reason,
+                'created_at' => $return->created_at?->toIso8601String(),
+                'items' => $return->items->map(static fn ($line): array => [
+                    'ref' => $line->orderItem?->ref,
+                    'name' => $line->orderItem?->name,
+                    'quantity' => $line->quantity,
+                    'line_total' => $line->line_total,
+                ])->all(),
+                'erp' => [
+                    'credit_note_id' => $return->dolibarr_credit_note_id,
+                    'refunded_at' => $return->dolibarr_refunded_at?->toIso8601String(),
+                    'synced_at' => $return->isErpSynced() ? $return->dolibarr_synced_at?->toIso8601String() : null,
+                    'error' => $return->dolibarr_error,
+                ],
+            ])->all()),
 
             'subtotal' => $this->subtotal,
             'total' => $this->total,

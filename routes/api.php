@@ -28,6 +28,7 @@ Route::get('/admin/orders/{order:reference}', [AdminShopController::class, 'show
 Route::patch('/admin/orders/{order:reference}', [AdminShopController::class, 'updateOrder']);
 Route::get('/admin/orders/{order:reference}/invoice', [AdminShopController::class, 'orderInvoice']);
 Route::post('/admin/orders/{order:reference}/sync-erp', [AdminShopController::class, 'retryErpSync']);
+Route::post('/admin/orders/{order:reference}/returns', [AdminShopController::class, 'createReturn']);
 Route::get('/admin/settings', [AdminShopController::class, 'settings']);
 Route::patch('/admin/settings', [AdminShopController::class, 'updateSettings']);
 

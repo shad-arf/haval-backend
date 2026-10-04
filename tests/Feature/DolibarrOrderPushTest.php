@@ -18,6 +18,9 @@ class DolibarrOrderPushTest extends TestCase
 
     private const DEALER_CUSTOMER = 1153;
 
+    /** Flipped by a test to make the faked ERP answer every request with a 500. */
+    private bool $erpDown = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -34,6 +37,10 @@ class DolibarrOrderPushTest extends TestCase
     private function fakeErp(float $remainToPay = 14.34): void
     {
         Http::fake(function (Request $request) use ($remainToPay) {
+            if ($this->erpDown) {
+                return Http::response(['error' => 'down'], 500);
+            }
+
             $path = parse_url($request->url(), PHP_URL_PATH);
             $query = urldecode((string) parse_url($request->url(), PHP_URL_QUERY));
 
@@ -43,11 +50,12 @@ class DolibarrOrderPushTest extends TestCase
                     : Http::response(['error' => 'Not found'], 404),
                 $request->method() === 'GET' && (str_ends_with($path, '/orders') || str_ends_with($path, '/invoices')) => Http::response(['error' => 'Not found'], 404),
                 $request->method() === 'POST' && str_ends_with($path, '/orders') => Http::response('501'),
-                $request->method() === 'POST' && str_ends_with($path, '/invoices') => Http::response('601'),
+                $request->method() === 'POST' && str_ends_with($path, '/invoices') => Http::response(($request['type'] ?? 0) === 2 ? '701' : '601'),
                 str_ends_with($path, '/lines') => Http::response('1'),
                 str_ends_with($path, '/validate') => Http::response(['ok' => true]),
                 str_ends_with($path, '/payments') => Http::response('77'),
-                str_ends_with($path, '/invoices/601') => Http::response(['lines' => [], 'paye' => $remainToPay > 0 ? 0 : 1, 'remaintopay' => $remainToPay]),
+                str_ends_with($path, '/invoices/601') => Http::response(['lines' => [], 'socid' => self::DEALER_CUSTOMER, 'paye' => $remainToPay > 0 ? 0 : 1, 'remaintopay' => $remainToPay]),
+                str_ends_with($path, '/invoices/701') => Http::response(['lines' => [], 'status' => 1, 'paye' => 0, 'remaintopay' => -7.17]),
                 default => Http::response(['lines' => []]),
             };
         });
@@ -232,5 +240,102 @@ class DolibarrOrderPushTest extends TestCase
 
         $this->withToken($token)->postJson("/api/admin/orders/{$order->reference}/sync-erp")
             ->assertUnprocessable()->assertJsonPath('message', 'ERP order push is turned off (DOLIBARR_PUSH_ORDERS=false).');
+    }
+
+    private function adminWithToken(): string
+    {
+        $token = 'admin-test-token';
+        User::factory()->create(['role' => 'admin', 'api_token_hash' => hash('sha256', $token)]);
+
+        return $token;
+    }
+
+    /** A paid order already invoiced in the ERP, with two lines. */
+    private function invoicedOrder(): Order
+    {
+        $order = $this->paidOrder();
+        $order->items()->create(['erp_product_id' => 42, 'ref' => 'PART-42', 'name' => 'Plug', 'unit_price' => 10750, 'quantity' => 2, 'line_total' => 21500]);
+        $order->items()->create(['erp_product_id' => 43, 'ref' => 'PART-43', 'name' => 'Filter', 'unit_price' => 5000, 'quantity' => 1, 'line_total' => 5000]);
+        $order->update(['dolibarr_invoice_id' => 601, 'dolibarr_paid_at' => now(), 'dolibarr_synced_at' => now()]);
+
+        return $order->fresh('items');
+    }
+
+    public function test_partial_return_creates_a_refunded_credit_note_that_restocks(): void
+    {
+        config()->set('shop.usd_iqd_rate', 1500);
+        $this->fakeErp();
+        $order = $this->invoicedOrder();
+        $plug = $order->items->firstWhere('ref', 'PART-42');
+
+        $this->withToken($this->adminWithToken())->postJson("/api/admin/orders/{$order->reference}/returns", [
+            'items' => [['order_item_id' => $plug->id, 'quantity' => 1]], 'reason' => 'Wrong part',
+        ])->assertCreated()
+            ->assertJsonPath('data.returns.0.reference', 'WEB-777777-R1')
+            ->assertJsonPath('data.returns.0.total', 10750)
+            ->assertJsonPath('data.returns.0.erp.credit_note_id', 701)
+            ->assertJsonPath('data.items.0.returned_quantity', 1);
+
+        // A credit note against the invoice, on the invoice's own customer.
+        Http::assertSent(fn (Request $request) => $request->method() === 'POST' && str_ends_with($request->url(), '/invoices')
+            && $request['type'] === 2 && $request['fk_facture_source'] === 601 && $request['socid'] === self::DEALER_CUSTOMER
+            && $request['ref_client'] === 'WEB-777777-R1');
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/701/lines') && $request['qty'] === 1 && $request['subprice'] === 7.17 && $request['fk_product'] === 42);
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/701/validate') && $request['idwarehouse'] === 6 && $request['force_number'] === 'WEB-777777-R1');
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/701/payments') && $request['accountid'] === 1 && $request['num_payment'] === 'WEB-777777-R1');
+        $this->assertNotSame(Order::FULFILMENT_RETURNED, $order->fresh()->fulfilment_status);
+    }
+
+    public function test_returning_everything_marks_the_order_returned(): void
+    {
+        $this->fakeErp();
+        $order = $this->invoicedOrder();
+
+        $this->withToken($this->adminWithToken())->postJson("/api/admin/orders/{$order->reference}/returns", [
+            'items' => $order->items->map(fn ($item) => ['order_item_id' => $item->id, 'quantity' => $item->quantity])->all(),
+        ])->assertCreated()->assertJsonPath('data.returns.0.total', 26500);
+
+        $this->assertSame(Order::FULFILMENT_RETURNED, $order->fresh()->fulfilment_status);
+    }
+
+    public function test_cannot_return_more_than_was_bought_across_returns(): void
+    {
+        $this->fakeErp();
+        $order = $this->invoicedOrder();
+        $plug = $order->items->firstWhere('ref', 'PART-42');
+        $token = $this->adminWithToken();
+
+        $this->withToken($token)->postJson("/api/admin/orders/{$order->reference}/returns", ['items' => [['order_item_id' => $plug->id, 'quantity' => 1]]])->assertCreated();
+        $this->withToken($token)->postJson("/api/admin/orders/{$order->reference}/returns", ['items' => [['order_item_id' => $plug->id, 'quantity' => 2]]])
+            ->assertUnprocessable()->assertJsonPath('message', 'Only 1 of PART-42 can still be returned.');
+        $this->withToken($token)->postJson("/api/admin/orders/{$order->reference}/returns", ['items' => [['order_item_id' => $plug->id, 'quantity' => 1]]])
+            ->assertCreated()->assertJsonPath('data.returns.1.reference', 'WEB-777777-R2');
+    }
+
+    public function test_an_order_not_yet_in_the_erp_cannot_be_returned(): void
+    {
+        $this->fakeErp();
+        $order = $this->paidOrder();
+        $item = $order->items()->create(['erp_product_id' => 42, 'ref' => 'PART-42', 'name' => 'Plug', 'unit_price' => 10750, 'quantity' => 1, 'line_total' => 10750]);
+
+        $this->withToken($this->adminWithToken())->postJson("/api/admin/orders/{$order->reference}/returns", ['items' => [['order_item_id' => $item->id, 'quantity' => 1]]])
+            ->assertUnprocessable()->assertJsonPath('message', 'Sync this order to the ERP before recording a return.');
+        $this->assertDatabaseCount('order_returns', 0);
+    }
+
+    public function test_a_failed_return_push_is_kept_and_retried_by_sync(): void
+    {
+        $order = $this->invoicedOrder();
+        $plug = $order->items->firstWhere('ref', 'PART-42');
+        $token = $this->adminWithToken();
+        $this->fakeErp();
+        $this->erpDown = true;
+
+        $this->withToken($token)->postJson("/api/admin/orders/{$order->reference}/returns", ['items' => [['order_item_id' => $plug->id, 'quantity' => 1]]])
+            ->assertCreated()->assertJsonPath('data.returns.0.erp.error', 'Dolibarr request failed. (HTTP 500)');
+
+        $this->erpDown = false;
+        $this->withToken($token)->postJson("/api/admin/orders/{$order->reference}/sync-erp")
+            ->assertOk()->assertJsonPath('data.returns.0.erp.credit_note_id', 701)->assertJsonPath('data.returns.0.erp.error', null);
     }
 }

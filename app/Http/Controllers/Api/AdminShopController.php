@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\OrderResource;
 use App\Models\Order;
+use App\Models\OrderReturn;
 use App\Models\ProductOverride;
 use App\Models\User;
 use App\Services\DolibarrClient;
@@ -217,7 +218,7 @@ class AdminShopController extends Controller
                 return response()->json(['message' => 'This order cannot be fulfilled in its current state.'], 422);
             }
 
-            return response()->json(['data' => new OrderResource($order->fresh()->load('items'))]);
+            return response()->json(['data' => new OrderResource($order->fresh()->load(Order::ADMIN_RELATIONS))]);
         }
 
         if ($data['action'] === 'confirm_cash_delivery' && $order->payment_method === Order::METHOD_COD && $order->status === Order::STATUS_AWAITING_DELIVERY) {
@@ -235,7 +236,7 @@ class AdminShopController extends Controller
             return response()->json(['message' => 'This order cannot make that transition.'], 422);
         }
 
-        return response()->json(['data' => new OrderResource($order->fresh()->load('items'))]);
+        return response()->json(['data' => new OrderResource($order->fresh()->load(Order::ADMIN_RELATIONS))]);
     }
 
     /**
@@ -257,9 +258,89 @@ class AdminShopController extends Controller
             return response()->json(['message' => 'ERP order push is turned off (DOLIBARR_PUSH_ORDERS=false).'], 422);
         }
 
-        $this->pusher->push($order);
+        $this->pusher->push($order->fresh());
 
-        return response()->json(['data' => new OrderResource($order->fresh()->load('items'))]);
+        // A return that failed to reach the ERP is retried with the order.
+        foreach ($order->returns()->get() as $return) {
+            $this->pusher->pushReturn($return);
+        }
+
+        return response()->json(['data' => new OrderResource($order->fresh()->load(Order::ADMIN_RELATIONS))]);
+    }
+
+    /**
+     * Record goods sent back on a paid order and push them to the ERP as a
+     * credit note (stock back into the warehouse, money refunded). The
+     * dashboard asks the admin to confirm the items and quantities first.
+     */
+    public function createReturn(Request $request, Order $order): JsonResponse
+    {
+        if (! $this->authorized($request)) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $data = $request->validate([
+            'items' => ['required', 'array', 'min:1'],
+            'items.*.order_item_id' => ['required', 'integer', 'distinct'],
+            'items.*.quantity' => ['required', 'integer', 'min:1'],
+            'reason' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        if (! $order->isPaid()) {
+            return response()->json(['message' => 'Only a paid order can have items returned.'], 422);
+        }
+
+        // Refunding something the ERP never sold would leave its books worse
+        // off than doing nothing, so the sale has to be there first.
+        if ($this->pusher->enabled() && $order->dolibarr_invoice_id === null) {
+            return response()->json(['message' => 'Sync this order to the ERP before recording a return.'], 422);
+        }
+
+        $return = DB::transaction(function () use ($order, $data, $request): OrderReturn|string {
+            $items = $order->items()->lockForUpdate()->get()->keyBy('id');
+            $lines = [];
+
+            foreach ($data['items'] as $line) {
+                $item = $items->get($line['order_item_id']);
+
+                if ($item === null) {
+                    return 'That item is not part of this order.';
+                }
+                if ($line['quantity'] > $item->returnableQuantity()) {
+                    return sprintf('Only %d of %s can still be returned.', $item->returnableQuantity(), $item->ref);
+                }
+
+                $lines[] = [
+                    'order_item_id' => $item->id,
+                    'quantity' => $line['quantity'],
+                    'unit_price' => $item->unit_price,
+                    'line_total' => $item->unit_price * $line['quantity'],
+                ];
+            }
+
+            $return = $order->returns()->create([
+                'reference' => sprintf('%s-R%d', $order->reference, $order->returns()->count() + 1),
+                'total' => array_sum(array_column($lines, 'line_total')),
+                'reason' => $data['reason'] ?? null,
+                'created_by' => AccountController::user($request)?->id,
+            ]);
+            $return->items()->createMany($lines);
+
+            return $return;
+        });
+
+        if (is_string($return)) {
+            return response()->json(['message' => $return], 422);
+        }
+
+        // Everything back means the order itself has come back.
+        if ($order->items()->get()->every(fn ($item) => $item->returnableQuantity() === 0)) {
+            $order->moveFulfilmentTo(Order::FULFILMENT_RETURNED);
+        }
+
+        $this->pusher->pushReturn($return);
+
+        return response()->json(['data' => new OrderResource($order->fresh()->load(Order::ADMIN_RELATIONS))], 201);
     }
 
     /**
@@ -273,7 +354,7 @@ class AdminShopController extends Controller
             return response()->json(['message' => 'Forbidden.'], 403);
         }
 
-        return response()->json(['data' => new OrderResource($order->load('items'))]);
+        return response()->json(['data' => new OrderResource($order->load(Order::ADMIN_RELATIONS))]);
     }
 
     /**

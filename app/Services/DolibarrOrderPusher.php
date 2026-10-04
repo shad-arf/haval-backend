@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Exceptions\DolibarrRequestException;
 use App\Models\Order;
+use App\Models\OrderReturn;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
@@ -178,6 +179,131 @@ class DolibarrOrderPusher
         $this->addLines('orders', $id, $order);
 
         return $id;
+    }
+
+    /**
+     * Push a return as a Dolibarr credit note against the order's invoice:
+     * validated under the return's own reference (WEB-000010-R1) into the
+     * configured warehouse, which puts the stock back, then refunded from the
+     * account the money went into. Idempotent like push(); failures are kept
+     * in the return's error column for a retry.
+     */
+    public function pushReturn(OrderReturn $return): bool
+    {
+        if (! $this->enabled() || $return->isErpSynced()) {
+            return $return->isErpSynced();
+        }
+
+        $order = $return->order;
+
+        if ($order->dolibarr_invoice_id === null) {
+            $return->update(['dolibarr_error' => 'The order has no ERP invoice yet; sync the order first.']);
+
+            return false;
+        }
+
+        try {
+            $return->loadMissing('items.orderItem');
+
+            $creditNoteId = $return->dolibarr_credit_note_id ?? $this->createCreditNote($return, $order);
+            $return->update(['dolibarr_credit_note_id' => $creditNoteId]);
+
+            if ($return->dolibarr_refunded_at === null && $this->recordsPayments()) {
+                $this->recordRefund($return, $order, $creditNoteId);
+                $return->update(['dolibarr_refunded_at' => now()]);
+            }
+
+            $return->update(['dolibarr_synced_at' => now(), 'dolibarr_error' => null]);
+            Log::info(sprintf('[erp-push] return %s -> Dolibarr credit note %d', $return->reference, $creditNoteId));
+
+            return true;
+        } catch (DolibarrRequestException $exception) {
+            $message = sprintf('%s (HTTP %d)', $exception->getMessage(), $exception->upstreamStatus);
+        } catch (Throwable $exception) {
+            $message = $exception->getMessage();
+        }
+
+        $return->update(['dolibarr_error' => $message]);
+        Log::warning(sprintf('[erp-push] return %s failed: %s', $return->reference, $message));
+
+        return false;
+    }
+
+    /**
+     * @throws RuntimeException
+     */
+    private function createCreditNote(OrderReturn $return, Order $order): int
+    {
+        // A retry may find a draft an interrupted attempt left behind; it is
+        // completed and validated rather than duplicated.
+        $id = $this->dolibarr->findByClientRef('invoices', $return->reference);
+
+        if ($id > 0) {
+            $draft = $this->dolibarr->invoice($id);
+
+            if ((int) ($draft['status'] ?? $draft['statut'] ?? 1) !== 0) {
+                return $id;
+            }
+        } else {
+            // Booked to whoever the original invoice was booked to — a dealer's
+            // return lands on the dealer's account even if their code changed since.
+            $invoice = $this->dolibarr->invoice((int) $order->dolibarr_invoice_id);
+
+            $id = $this->dolibarr->createInvoice([
+                'socid' => (int) $invoice['socid'],
+                'type' => 2,
+                'fk_facture_source' => (int) $order->dolibarr_invoice_id,
+                'date' => $return->created_at?->getTimestamp() ?? time(),
+                'ref_client' => $return->reference,
+                'note_private' => sprintf('Return %s of web order %s. Refund %s IQD.%s', $return->reference, $order->reference, number_format($return->total), $return->reason ? ' Reason: '.$return->reason : ''),
+            ]);
+        }
+
+        $existingLines = $this->dolibarr->documentLineMarkers('invoices', $id);
+        $rate = $this->pricing->erpCurrency() === 'IQD' ? '' : sprintf(' @ %s IQD/USD', $this->pricing->usdIqdRate());
+
+        foreach ($return->items as $item) {
+            $marker = sprintf('[%s-ITEM-%d]', $return->reference, $item->order_item_id);
+
+            if (in_array($marker, $existingLines, true)) {
+                continue;
+            }
+
+            // Positive amounts: Dolibarr flips the sign on credit note lines itself.
+            $this->dolibarr->addDocumentLine('invoices', $id, [
+                'desc' => sprintf('%s %s | %s | %d IQD%s', $marker, $item->orderItem->ref, $item->orderItem->name, $item->unit_price, $rate),
+                'qty' => $item->quantity,
+                'subprice' => $this->pricing->toErpCurrency($item->unit_price),
+                'tva_tx' => (float) config('dolibarr.vat_rate'),
+                'fk_product' => $item->orderItem->erp_product_id,
+            ]);
+        }
+
+        $this->dolibarr->validateInvoice($id, (int) config('dolibarr.warehouse_id'), $return->reference);
+
+        return $id;
+    }
+
+    /**
+     * @throws RuntimeException
+     */
+    private function recordRefund(OrderReturn $return, Order $order, int $creditNoteId): void
+    {
+        $creditNote = $this->dolibarr->invoice($creditNoteId);
+
+        // A credit note owes a negative amount; nothing left means already refunded.
+        if ((int) ($creditNote['paye'] ?? 0) === 1 || abs((float) ($creditNote['remaintopay'] ?? 1)) < 0.005) {
+            return;
+        }
+
+        $this->dolibarr->addInvoicePayment($creditNoteId, [
+            'datepaye' => time(),
+            'paymentid' => (int) config('dolibarr.payment_modes.'.$order->payment_method, config('dolibarr.payment_modes.fib_card')),
+            'closepaidinvoices' => 'yes',
+            'accountid' => $this->bankAccountFor($order),
+            'num_payment' => $return->reference,
+            'comment' => sprintf('Refund for return %s of web order %s, %s IQD (%s).', $return->reference, $order->reference, number_format($return->total), $this->paymentLabel($order)),
+        ]);
     }
 
     /**
