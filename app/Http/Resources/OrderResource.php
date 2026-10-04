@@ -75,6 +75,9 @@ class OrderResource extends JsonResource
              * invoice. Only meaningful once paid — see DolibarrOrderPusher.
              */
             'erp' => [
+                // False while DOLIBARR_PUSH_ORDERS is off, so the admin page
+                // can say why a paid order never reached the ERP.
+                'enabled' => (bool) config('dolibarr.push_orders'),
                 'order_id' => $this->dolibarr_order_id,
                 'invoice_id' => $this->dolibarr_invoice_id,
                 'synced_at' => $this->dolibarr_synced_at?->toIso8601String(),

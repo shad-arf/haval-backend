@@ -253,6 +253,10 @@ class AdminShopController extends Controller
             return response()->json(['message' => 'Only a paid order can be synced to the ERP.'], 422);
         }
 
+        if (! $this->pusher->enabled()) {
+            return response()->json(['message' => 'ERP order push is turned off (DOLIBARR_PUSH_ORDERS=false).'], 422);
+        }
+
         $this->pusher->push($order);
 
         return response()->json(['data' => new OrderResource($order->fresh()->load('items'))]);
