@@ -54,6 +54,7 @@ class DolibarrOrderPushTest extends TestCase
                 str_ends_with($path, '/lines') => Http::response('1'),
                 str_ends_with($path, '/validate') => Http::response(['ok' => true]),
                 str_ends_with($path, '/payments') => Http::response('77'),
+                str_ends_with($path, '/paymentsdistributed') => Http::response('78'),
                 str_ends_with($path, '/invoices/601') => Http::response(['lines' => [], 'socid' => self::DEALER_CUSTOMER, 'paye' => $remainToPay > 0 ? 0 : 1, 'remaintopay' => $remainToPay]),
                 str_ends_with($path, '/invoices/701') => Http::response(['lines' => [], 'status' => 1, 'paye' => 0, 'remaintopay' => -7.17]),
                 default => Http::response(['lines' => []]),
@@ -282,7 +283,11 @@ class DolibarrOrderPushTest extends TestCase
             && $request['ref_client'] === 'WEB-777777-R1');
         Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/701/lines') && $request['qty'] === 1 && $request['subprice'] === 7.17 && $request['fk_product'] === 42);
         Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/701/validate') && $request['idwarehouse'] === 6 && $request['force_number'] === 'WEB-777777-R1');
-        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/701/payments') && $request['accountid'] === 1 && $request['num_payment'] === 'WEB-777777-R1');
+        // Refunds go through paymentsdistributed with a plain amount — see DolibarrClient::addCreditNoteRefund.
+        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/paymentsdistributed')
+            && $request['arrayofamounts'] === ['701' => ['amount' => 'remain', 'multicurrency_amount' => '']]
+            && $request['accountid'] === 1 && $request['num_payment'] === 'WEB-777777-R1' && $request['closepaidinvoices'] === 'yes');
+        Http::assertNotSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/701/payments'));
         $this->assertNotSame(Order::FULFILMENT_RETURNED, $order->fresh()->fulfilment_status);
     }
 

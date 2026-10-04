@@ -296,7 +296,7 @@ class DolibarrOrderPusher
             return;
         }
 
-        $this->dolibarr->addInvoicePayment($creditNoteId, [
+        $this->dolibarr->addCreditNoteRefund($creditNoteId, [
             'datepaye' => time(),
             'paymentid' => (int) config('dolibarr.payment_modes.'.$order->payment_method, config('dolibarr.payment_modes.fib_card')),
             'closepaidinvoices' => 'yes',

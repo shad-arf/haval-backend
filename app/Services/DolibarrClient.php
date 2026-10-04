@@ -287,6 +287,23 @@ class DolibarrClient
     }
 
     /**
+     * Settles the whole remaining balance of a credit note (a refund).
+     *
+     * Not addInvoicePayment: with multicurrency enabled, Dolibarr 15's
+     * single-invoice payment negates a credit note's multicurrency total
+     * twice and books the refund as money coming in. The distributed endpoint
+     * with a plain "remain" amount and no multicurrency amount books it out.
+     *
+     * @param  array<string, mixed>  $payment
+     */
+    public function addCreditNoteRefund(int $creditNoteId, array $payment): int
+    {
+        return (int) $this->post('invoices/paymentsdistributed', [
+            'arrayofamounts' => [(string) $creditNoteId => ['amount' => 'remain', 'multicurrency_amount' => '']],
+        ] + $payment);
+    }
+
+    /**
      * The id of the customer third party whose customer code (code_client)
      * is exactly $code, or 0 when there is none.
      */
