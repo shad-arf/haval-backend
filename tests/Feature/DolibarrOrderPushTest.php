@@ -105,6 +105,21 @@ class DolibarrOrderPushTest extends TestCase
         $this->assertSame(self::ONLINE_CUSTOMER, $this->bookedCustomer());
     }
 
+    public function test_invoice_only_push_skips_the_sales_order(): void
+    {
+        config()->set('dolibarr.push_sales_orders', false);
+        $this->fakeErp();
+        $order = $this->paidOrder();
+
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($order));
+        $this->assertTrue(app(DolibarrOrderPusher::class)->push($order->fresh()));
+
+        $this->assertDatabaseHas('orders', ['id' => $order->id, 'dolibarr_order_id' => null, 'dolibarr_invoice_id' => 601]);
+        Http::assertNotSent(fn (Request $request) => str_contains(parse_url($request->url(), PHP_URL_PATH), '/orders'));
+        // find, create, read lines, validate — and nothing on the second push.
+        Http::assertSentCount(4);
+    }
+
     public function test_admin_cannot_save_a_customer_code_dolibarr_does_not_know(): void
     {
         $this->fakeErp();

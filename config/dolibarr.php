@@ -30,6 +30,12 @@ return [
     'customer_id' => (int) env('DOLIBARR_CUSTOMER_ID', 0),
 
     /**
+     * Whether a sales order is created before the invoice. Turn off where the
+     * Dolibarr Sales Orders module is disabled and the shop bills directly.
+     */
+    'push_sales_orders' => (bool) env('DOLIBARR_PUSH_SALES_ORDER', true),
+
+    /**
      * VAT rate sent on every pushed line. requirements.md §2.5 item 4 asks the
      * ERP team to confirm whether VAT applies to online sales.
      */

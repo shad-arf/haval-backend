@@ -2,13 +2,15 @@
 
 namespace App\Services;
 
+use App\Exceptions\DolibarrRequestException;
 use App\Models\Order;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
 
 /**
- * Writes a confirmed order into Dolibarr as a sales order and a validated invoice.
+ * Writes a confirmed order into Dolibarr as a validated invoice, preceded by a
+ * sales order unless DOLIBARR_PUSH_SALES_ORDER is off.
  *
  * Every step is idempotent. The order reference is sent as `ref_client`, and
  * before creating anything the ERP is asked whether a document with that
@@ -39,7 +41,7 @@ class DolibarrOrderPusher
             return false;
         }
 
-        if ($order->dolibarr_order_id !== null && $order->dolibarr_invoice_id !== null) {
+        if ($order->dolibarr_invoice_id !== null && ($order->dolibarr_order_id !== null || ! $this->pushesSalesOrders())) {
             return true;
         }
 
@@ -54,8 +56,12 @@ class DolibarrOrderPusher
                 return false;
             }
 
-            $orderId = $order->dolibarr_order_id ?? $this->createSalesOrder($order, $customerId);
-            $order->update(['dolibarr_order_id' => $orderId]);
+            $orderId = $order->dolibarr_order_id;
+
+            if ($orderId === null && $this->pushesSalesOrders()) {
+                $orderId = $this->createSalesOrder($order, $customerId);
+                $order->update(['dolibarr_order_id' => $orderId]);
+            }
 
             $invoiceId = $order->dolibarr_invoice_id ?? $this->createInvoice($order, $customerId);
             $order->update([
@@ -64,14 +70,28 @@ class DolibarrOrderPusher
                 'dolibarr_error' => null,
             ]);
 
-            Log::info(sprintf('[erp-push] order %s -> Dolibarr order %d, invoice %d', $order->reference, $orderId, $invoiceId));
+            Log::info(sprintf('[erp-push] order %s -> Dolibarr order %s, invoice %d', $order->reference, $orderId ?? 'skipped', $invoiceId));
 
             return true;
+        } catch (DolibarrRequestException $exception) {
+            $this->fail($order, sprintf('%s (HTTP %d)', $exception->getMessage(), $exception->upstreamStatus));
+
+            return false;
         } catch (Throwable $exception) {
             $this->fail($order, $exception->getMessage());
 
             return false;
         }
+    }
+
+    /**
+     * Some Dolibarr installs bill straight to invoices with the Sales Orders
+     * module switched off; the invoice alone carries the accounting and the
+     * stock movement, so the sales order is optional.
+     */
+    private function pushesSalesOrders(): bool
+    {
+        return (bool) config('dolibarr.push_sales_orders');
     }
 
     /**
