@@ -117,10 +117,7 @@ class CheckoutService
                 ));
             }
 
-            $costUsd = $this->pricing->costInUsd($cost);
-            $unitPrice = (int) ($dealerProfit === null
-                ? $this->pricing->sellingPrice($costUsd, $override?->profit_percentage)
-                : $this->pricing->dealerPrice($costUsd, $override?->profit_percentage, $dealerProfit));
+            $unitPrice = $this->pricing->payablePrice($this->pricing->costInUsd($cost), $override?->profit_percentage, $override?->sale_price, $dealerProfit);
 
             $priced[] = [
                 'erp_product_id' => (int) ($product['id'] ?? $productId),

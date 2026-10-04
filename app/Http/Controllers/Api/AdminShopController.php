@@ -95,6 +95,9 @@ class AdminShopController extends Controller
                 'stock_status' => $this->pricing->stockStatus($stockQuantity),
                 'price' => $cost > 0 ? (int) $this->pricing->sellingPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
                 'dealer_price' => $cost > 0 ? (int) $this->pricing->dealerPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
+                'sale_price' => $override?->sale_price,
+                // Admin only: lets the page flag a sale price below cost.
+                'cost_iqd' => $cost > 0 ? (int) round($this->pricing->costInUsd($cost) * $this->pricing->usdIqdRate()) : null,
                 'is_hidden' => $isHidden,
                 'profit_percentage' => $override?->profit_percentage,
                 'display_name' => $override?->display_name,
@@ -142,6 +145,7 @@ class AdminShopController extends Controller
         $data = $request->validate([
             'is_hidden' => ['sometimes', 'boolean'],
             'profit_percentage' => ['sometimes', 'nullable', 'numeric', 'between:0,1000'],
+            'sale_price' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:1000000000'],
             'display_name' => ['sometimes', 'nullable', 'string', 'max:255'],
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
         ]);
@@ -190,6 +194,9 @@ class AdminShopController extends Controller
             'stock_status' => $this->pricing->stockStatus($stockQuantity),
             'price' => $cost > 0 ? (int) $this->pricing->sellingPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
             'dealer_price' => $cost > 0 ? (int) $this->pricing->dealerPrice($this->pricing->costInUsd($cost), $override?->profit_percentage) : null,
+            'sale_price' => $override?->sale_price,
+            // Admin only: lets the page flag a sale price below cost.
+            'cost_iqd' => $cost > 0 ? (int) round($this->pricing->costInUsd($cost) * $this->pricing->usdIqdRate()) : null,
             'has_cost' => $cost > 0,
             'is_hidden' => $isHidden,
             'profit_percentage' => $override?->profit_percentage,

@@ -145,6 +145,41 @@ class CheckoutApiTest extends TestCase
             ->assertJsonPath('price', 16500)->assertJsonPath('dealer_price', 16500);
     }
 
+    public function test_a_sale_price_is_shown_and_charged_even_below_cost(): void
+    {
+        $this->dealerPricingSetup();
+        // Cost is $10 = 15,000 IQD; a clearance at 12,000 sells under cost on purpose.
+        ProductOverride::create(['erp_product_id' => 19902, 'sale_price' => 12000]);
+
+        $this->getJson('/api/products/19902')->assertOk()
+            ->assertJsonPath('price', 22500)->assertJsonPath('sale_price', 12000);
+        $this->postJson('/api/checkout', $this->checkoutPayload())
+            ->assertCreated()->assertJsonPath('data.items.0.unit_price', 12000)->assertJsonPath('data.total', 24000);
+    }
+
+    public function test_dealers_pay_the_lower_of_their_price_and_the_sale_price(): void
+    {
+        $this->dealerPricingSetup();
+        $dealer = User::factory()->create(['role' => 'dealer']);
+        $dealer->forceFill(['api_token_hash' => hash('sha256', 'dealer-test-token')])->save();
+        $override = ProductOverride::create(['erp_product_id' => 19902, 'sale_price' => 20000]);
+
+        // Sale 20,000 is above the dealer's 18,750, so the dealer keeps 18,750.
+        $this->withToken('dealer-test-token')->getJson('/api/products/19902')->assertJsonPath('dealer_price', 18750);
+
+        $override->update(['sale_price' => 17000]);
+        $this->withToken('dealer-test-token')->getJson('/api/products/19902')->assertJsonPath('dealer_price', 17000);
+    }
+
+    public function test_a_sale_price_above_the_regular_price_is_ignored(): void
+    {
+        $this->dealerPricingSetup();
+        ProductOverride::create(['erp_product_id' => 19902, 'sale_price' => 30000]);
+
+        $this->getJson('/api/products/19902')->assertJsonPath('price', 22500)->assertJsonPath('sale_price', null);
+        $this->postJson('/api/checkout', $this->checkoutPayload())->assertCreated()->assertJsonPath('data.items.0.unit_price', 22500);
+    }
+
     public function test_expired_dealer_pricing_is_not_applied_and_checkout_saves_address(): void
     {
         $this->dealerPricingSetup();

@@ -142,8 +142,10 @@ class ErpProductController extends Controller
             'name' => $override?->display_name ?: self::displayName($ref, (string) ($product['label'] ?? ''), $shortDescription, $description),
             'description' => $override?->description ?? $description,
             'short_description' => $shortDescription,
+            // The regular price, struck through whenever a sale or dealer price is lower.
             'price' => $price,
-            'dealer_price' => $dealerProfit === null ? null : $this->pricing->dealerPrice($costUsd, $override?->profit_percentage, $dealerProfit),
+            'sale_price' => $this->pricing->activeSalePrice($override?->sale_price, $price),
+            'dealer_price' => $dealerProfit === null ? null : $this->pricing->payablePrice($costUsd, $override?->profit_percentage, $override?->sale_price, $dealerProfit),
             'currency' => 'IQD',
             'stock_quantity' => $quantity,
             'stock_status' => $this->pricing->stockStatus($quantity),

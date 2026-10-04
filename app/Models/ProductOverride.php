@@ -15,6 +15,6 @@ class ProductOverride extends Model
 
     protected function casts(): array
     {
-        return ['is_hidden' => 'boolean', 'profit_percentage' => 'float'];
+        return ['is_hidden' => 'boolean', 'profit_percentage' => 'float', 'sale_price' => 'integer'];
     }
 }

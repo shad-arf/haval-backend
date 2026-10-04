@@ -124,6 +124,31 @@ class PricingEngine
         );
     }
 
+    /**
+     * An admin sale price, when it actually undercuts the regular price —
+     * otherwise null, so a stale sale above a lowered price is ignored.
+     */
+    public function activeSalePrice(?int $salePrice, float $regularPrice): ?int
+    {
+        return $salePrice !== null && $salePrice > 0 && $salePrice < $regularPrice ? $salePrice : null;
+    }
+
+    /**
+     * What a shopper pays for one unit: the regular (or sale) price, or for a
+     * dealer the lower of their dealer price and any sale price.
+     */
+    public function payablePrice(float $costUsd, ?float $profitOverride, ?int $salePrice, ?float $dealerProfit): int
+    {
+        $regular = $this->sellingPrice($costUsd, $profitOverride);
+        $price = $this->activeSalePrice($salePrice, $regular) ?? $regular;
+
+        if ($dealerProfit !== null) {
+            $price = min($price, $this->dealerPrice($costUsd, $profitOverride, $dealerProfit));
+        }
+
+        return (int) $price;
+    }
+
     public function dealerProfitPercentage(): float
     {
         return $this->dealerProfitPercentage;
