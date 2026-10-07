@@ -102,7 +102,14 @@ class ErpProductController extends Controller
 
     public function show(int $id): JsonResponse
     {
-        return $this->respondProduct(fn (): array => $this->dolibarr->product($id));
+        // Carts look parts up one by one, and several open tabs can ask for
+        // the same ones at once; 30 seconds keeps that off the ERP. Checkout
+        // re-reads every line itself, so a stale price or stock never sells.
+        return $this->respondProduct(fn (): array => Cache::remember(
+            'catalog.erp-product.'.$id,
+            now()->addSeconds(30),
+            fn (): array => $this->dolibarr->product($id),
+        ));
     }
 
     public function byRef(string $ref): JsonResponse

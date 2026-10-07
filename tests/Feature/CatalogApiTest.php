@@ -192,6 +192,23 @@ class CatalogApiTest extends TestCase
         $this->assertSame(2, $catalogRequests());
     }
 
+    /**
+     * Carts fetch parts one by one; repeated lookups (several tabs, a busy
+     * cart) must not each reach the ERP.
+     */
+    public function test_a_single_product_is_fetched_from_the_erp_once_per_30_seconds(): void
+    {
+        Http::fake(['erp.test/*' => Http::response($this->erpProduct())]);
+
+        $this->getJson('/api/products/15752')->assertOk();
+        $this->getJson('/api/products/15752')->assertOk();
+        Http::assertSentCount(1);
+
+        $this->travel(31)->seconds();
+        $this->getJson('/api/products/15752')->assertOk();
+        Http::assertSentCount(2);
+    }
+
     public function test_a_single_product_is_priced_the_same_way_as_the_listing(): void
     {
         Http::fake(['erp.test/*' => Http::response($this->erpProduct())]);
