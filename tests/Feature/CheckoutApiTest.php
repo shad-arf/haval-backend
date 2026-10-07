@@ -6,6 +6,7 @@ use App\Models\Order;
 use App\Models\ProductOverride;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -223,6 +224,35 @@ class CheckoutApiTest extends TestCase
         ]))
             ->assertCreated()
             ->assertJsonPath('data.items.0.quantity', 250);
+    }
+
+    /** A workshop restocking can order up to 250 different parts at once. */
+    public function test_an_order_of_250_different_parts_is_accepted(): void
+    {
+        Http::fake(['erp.test/*' => function (Request $request) {
+            preg_match('#/products/(\d+)#', $request->url(), $match);
+
+            return Http::response($this->erpProduct(['id' => $match[1], 'ref' => 'P-'.$match[1]]));
+        }]);
+
+        $items = array_map(fn (int $id): array => ['product_id' => $id, 'quantity' => 1], range(1, 250));
+
+        $this->postJson('/api/checkout', $this->checkoutPayload(['items' => $items]))
+            ->assertCreated()
+            ->assertJsonCount(250, 'data.items')
+            ->assertJsonPath('data.items.249.ref', 'P-250');
+    }
+
+    public function test_more_than_250_different_parts_is_rejected(): void
+    {
+        Http::fake();
+
+        $items = array_map(fn (int $id): array => ['product_id' => $id, 'quantity' => 1], range(1, 251));
+
+        $this->postJson('/api/checkout', $this->checkoutPayload(['items' => $items]))
+            ->assertStatus(422)
+            ->assertJsonValidationErrors('items');
+        Http::assertNothingSent();
     }
 
     public function test_a_quantity_above_the_per_line_cap_is_rejected(): void

@@ -80,26 +80,33 @@ class CheckoutService
     {
         $priced = [];
         $unavailable = [];
+        $merged = $this->mergeDuplicates($lines);
 
-        foreach ($this->mergeDuplicates($lines) as $productId => $quantity) {
-            try {
-                $product = $this->dolibarr->product($productId);
-            } catch (DolibarrRequestException $exception) {
-                if ($exception->upstreamStatus === 404) {
-                    $unavailable[] = (string) $productId;
+        try {
+            $products = $this->dolibarr->productsById(array_keys($merged));
+        } catch (RuntimeException) {
+            throw new CheckoutException('We could not confirm your cart with the warehouse. Please try again.');
+        }
 
-                    continue;
-                }
+        $overrides = ProductOverride::whereIn('erp_product_id', array_keys($merged))->get()->keyBy('erp_product_id');
 
-                throw new CheckoutException('We could not confirm your cart with the warehouse. Please try again.');
-            } catch (RuntimeException $exception) {
+        foreach ($merged as $productId => $quantity) {
+            $product = $products[$productId] ?? new RuntimeException('Missing from the ERP response.');
+
+            if ($product instanceof DolibarrRequestException && $product->upstreamStatus === 404) {
+                $unavailable[] = (string) $productId;
+
+                continue;
+            }
+
+            if ($product instanceof RuntimeException) {
                 throw new CheckoutException('We could not confirm your cart with the warehouse. Please try again.');
             }
 
             $cost = $this->pricing->sourceCost($product);
             $stock = $this->pricing->stockQuantity($product);
             $ref = (string) ($product['ref'] ?? $productId);
-            $override = ProductOverride::where('erp_product_id', $productId)->first();
+            $override = $overrides->get($productId);
 
             // The same rules the catalog publishes by. A part that fails them
             // now cannot be bought, whatever the cart still believes.

@@ -118,6 +118,52 @@ class DolibarrClient
     }
 
     /**
+     * Several products by ID, fetched in parallel, keyed by ID.
+     *
+     * Checkout re-reads every cart line from the ERP; one by one, a 250-line
+     * cart would keep the customer waiting over twenty seconds. Each entry is
+     * either the product or the exception product() would have thrown for
+     * it, so the caller can treat a missing product differently from an
+     * outage.
+     *
+     * @param  array<int, int>  $ids
+     * @return array<int, array<string, mixed>|RuntimeException>
+     */
+    public function productsById(array $ids): array
+    {
+        [$baseUrl, $apiKey] = $this->connection();
+        $timeout = max(1, (int) config('dolibarr.timeout'));
+        $result = [];
+
+        // Small batches keep a large cart from flooding the ERP.
+        foreach (array_chunk(array_values(array_unique($ids)), 10) as $batch) {
+            $responses = Http::pool(fn (Pool $pool): array => array_map(
+                fn (int $id) => $pool->as((string) $id)
+                    ->acceptJson()
+                    ->withHeaders(['DOLAPIKEY' => $apiKey])
+                    ->timeout($timeout)
+                    ->get($baseUrl.'/products/'.$id, ['includestockdata' => 1]),
+                $batch,
+            ));
+
+            foreach ($batch as $id) {
+                $response = $responses[(string) $id] ?? null;
+
+                if (! $response instanceof Response) {
+                    $result[$id] = new RuntimeException('Dolibarr could not be reached.');
+                } elseif (! $response->successful()) {
+                    $result[$id] = new DolibarrRequestException($response->status());
+                } else {
+                    $data = $response->json();
+                    $result[$id] = is_array($data) ? $data : new RuntimeException('Dolibarr returned an invalid response.');
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function productByRef(string $ref): array

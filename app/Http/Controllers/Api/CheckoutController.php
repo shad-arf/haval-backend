@@ -87,7 +87,7 @@ class CheckoutController extends Controller
         }
 
         $input = $request->validate([
-            'items' => ['required', 'array', 'min:1', 'max:100'],
+            'items' => ['required', 'array', 'min:1', 'max:250'],
             'items.*.product_id' => ['required', 'integer', 'min:1'],
             'items.*.quantity' => ['required', 'integer', 'min:1', 'max:999'],
             'payment_method' => ['required', 'string', 'in:'.implode(',', $allowedMethods)],
