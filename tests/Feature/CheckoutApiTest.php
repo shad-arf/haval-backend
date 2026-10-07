@@ -230,7 +230,7 @@ class CheckoutApiTest extends TestCase
         $this->fakeErp($this->erpProduct(['stock_reel' => 50000]));
 
         $this->postJson('/api/checkout', $this->checkoutPayload([
-            'items' => [['product_id' => 19902, 'quantity' => 10000]],
+            'items' => [['product_id' => 19902, 'quantity' => 1000]],
         ]))->assertStatus(422)->assertJsonValidationErrors('items.0.quantity');
     }
 
