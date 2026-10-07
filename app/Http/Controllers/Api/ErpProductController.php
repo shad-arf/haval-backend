@@ -10,6 +10,7 @@ use App\Services\PricingEngine;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use RuntimeException;
 
 class ErpProductController extends Controller
@@ -43,7 +44,20 @@ class ErpProductController extends Controller
         $search = trim((string) ($input['q'] ?? ''));
 
         return $this->respond(function () use ($limit, $page, $brandId, $search): array {
-            $products = $this->dolibarr->products($limit, $page, $brandId, $search);
+            // Dolibarr loads every product and its warehouse stock one by one,
+            // so a page costs it the better part of a second. Every visitor
+            // asks for the same first pages; a minute of staleness is fine for
+            // browsing because checkout re-reads the product from the ERP.
+            $products = Cache::remember(
+                sprintf('catalog.erp-page.%d.%d.%d.%s', $limit, $page, $brandId, md5($search)),
+                now()->addMinute(),
+                fn (): array => $this->dolibarr->products($limit, $page, $brandId, $search),
+            );
+
+            $overrides = ProductOverride::whereIn('erp_product_id', array_map(static fn (array $product): int => (int) ($product['id'] ?? 0), $products))
+                ->get()
+                ->keyBy('erp_product_id');
+            $withPhotos = $this->dolibarr->productsWithPhotos(array_map(static fn (array $product): string => (string) ($product['ref'] ?? ''), $products));
 
             // The ERP query already excludes unpriceable and out-of-stock parts,
             // but a product can still fail the rules locally when the ERP
@@ -51,12 +65,16 @@ class ErpProductController extends Controller
             $catalog = [];
 
             foreach ($products as $product) {
-                $entry = $this->catalogProduct($product);
+                $entry = $this->catalogProduct($product, $overrides->get((int) ($product['id'] ?? 0)), $withPhotos[(string) ($product['ref'] ?? '')] ?? true);
 
                 if ($entry !== null) {
                     $catalog[] = $entry;
                 }
             }
+
+            // Parts with a photo lead the page; the sort is stable, so the
+            // ERP's newest-first order holds within each group.
+            usort($catalog, static fn (array $a, array $b): int => ($b['image_url'] !== null) <=> ($a['image_url'] !== null));
 
             return [
                 'data' => $catalog,
@@ -113,7 +131,7 @@ class ErpProductController extends Controller
         return $request->attributes->get('dealer_profit');
     }
 
-    private function catalogProduct(array $product): ?array
+    private function catalogProduct(array $product, ?ProductOverride $override, bool $hasPhoto = true): ?array
     {
         $sourceCost = $this->pricing->sourceCost($product);
         $quantity = $this->pricing->stockQuantity($product);
@@ -122,7 +140,6 @@ class ErpProductController extends Controller
             return null;
         }
 
-        $override = ProductOverride::where('erp_product_id', (int) ($product['id'] ?? 0))->first();
         if ($override?->is_hidden) {
             return null;
         }
@@ -152,12 +169,13 @@ class ErpProductController extends Controller
             'is_sellable' => (int) ($product['status'] ?? 0) === 1 && ($quantity === null || $quantity > 0),
 
             /**
-             * Always present. Many parts have no photo, so the storefront
-             * falls back to its placeholder when this 404s — cheaper than
-             * asking the ERP about every product just to build a listing.
+             * Null when the listing already knows the part has no photo, so
+             * the storefront shows its placeholder without a request that
+             * can only 404. A single product is not checked; the storefront
+             * falls back on its own if this 404s.
              */
-            'image_url' => $ref === '' ? null : route('products.image', ['ref' => $ref]),
-            'image_full_url' => $ref === '' ? null : route('products.image', ['ref' => $ref, 'size' => 'full']),
+            'image_url' => $ref === '' || ! $hasPhoto ? null : route('products.image', ['ref' => $ref]),
+            'image_full_url' => $ref === '' || ! $hasPhoto ? null : route('products.image', ['ref' => $ref, 'size' => 'full']),
         ];
     }
 
@@ -193,7 +211,8 @@ class ErpProductController extends Controller
     private function respondProduct(callable $fetch): JsonResponse
     {
         return $this->respond(function () use ($fetch): array|JsonResponse {
-            $product = $this->catalogProduct($fetch());
+            $erpProduct = $fetch();
+            $product = $this->catalogProduct($erpProduct, ProductOverride::where('erp_product_id', (int) ($erpProduct['id'] ?? 0))->first());
 
             if ($product === null) {
                 return response()->json(['message' => 'Product not found.'], 404);

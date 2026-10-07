@@ -3,6 +3,8 @@
 namespace App\Services;
 
 use App\Exceptions\DolibarrRequestException;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -136,9 +138,7 @@ class DolibarrClient
      */
     public function productImagePath(string $ref, bool $thumbnail = true): ?string
     {
-        $cacheKey = sprintf('dolibarr.image.%s.%s', $thumbnail ? 'small' : 'full', md5($ref));
-
-        $path = Cache::remember($cacheKey, now()->addHours(6), function () use ($ref, $thumbnail): string {
+        $path = Cache::remember(self::imageCacheKey($ref, $thumbnail), now()->addHours(6), function () use ($ref, $thumbnail): string {
             try {
                 $files = $this->get('documents', ['modulepart' => 'product', 'ref' => $ref]);
             } catch (DolibarrRequestException) {
@@ -146,38 +146,132 @@ class DolibarrClient
                 return '';
             }
 
-            $original = null;
-
-            foreach ($files as $file) {
-                $name = (string) ($file['relativename'] ?? '');
-
-                // Skip the thumbnails Dolibarr lists alongside the original.
-                if ($name === '' || str_contains($name, 'thumbs/') || str_contains($name, 'thumbs\\')) {
-                    continue;
-                }
-
-                if (preg_match('/\.(jpe?g|png|webp|gif)$/i', $name) === 1) {
-                    $original = $name;
-                    break;
-                }
-            }
-
-            if ($original === null) {
-                return '';
-            }
-
-            if (! $thumbnail) {
-                return $ref.'/'.$original;
-            }
-
-            // Dolibarr names thumbnails "<basename>_small.<ext>" beside the original.
-            $extension = pathinfo($original, PATHINFO_EXTENSION);
-            $base = pathinfo($original, PATHINFO_FILENAME);
-
-            return sprintf('%s/thumbs/%s_small.%s', $ref, $base, $extension);
+            return self::imagePathFromFiles($files, $ref, $thumbnail);
         });
 
         return $path === '' ? null : $path;
+    }
+
+    /**
+     * Which of these products have a photo, keyed by reference.
+     *
+     * A catalog page needs the answer for fifty products at once. Asking one
+     * by one would add fifty ERP round trips to the listing, so the lookups
+     * that are not already cached go out in parallel and share the cache
+     * productImagePath() reads, which also makes the image requests that
+     * follow cheaper.
+     *
+     * A lookup that fails outright is reported as having a photo: the
+     * storefront then just tries the image and falls back on its own.
+     *
+     * @param  array<int, string>  $refs
+     * @return array<string, bool>
+     */
+    public function productsWithPhotos(array $refs): array
+    {
+        $refs = array_values(array_unique(array_filter($refs, static fn (string $ref): bool => $ref !== '')));
+        $keys = array_combine($refs, array_map(static fn (string $ref): string => self::imageCacheKey($ref, true), $refs));
+        $cached = $keys === [] ? [] : Cache::many(array_values($keys));
+
+        $result = [];
+        $missing = [];
+
+        foreach ($keys as $ref => $key) {
+            if (is_string($cached[$key] ?? null)) {
+                $result[$ref] = $cached[$key] !== '';
+            } else {
+                $missing[] = $ref;
+            }
+        }
+
+        if ($missing === []) {
+            return $result;
+        }
+
+        [$baseUrl, $apiKey] = $this->connection();
+        $timeout = max(1, (int) config('dolibarr.timeout'));
+        $found = [];
+
+        // Small batches keep a cold catalog from flooding the ERP with fifty
+        // simultaneous requests.
+        foreach (array_chunk($missing, 10) as $batch) {
+            $responses = Http::pool(fn (Pool $pool): array => array_map(
+                fn (string $ref) => $pool->as($ref)
+                    ->acceptJson()
+                    ->withHeaders(['DOLAPIKEY' => $apiKey])
+                    ->timeout($timeout)
+                    ->get($baseUrl.'/documents', ['modulepart' => 'product', 'ref' => $ref]),
+                $batch,
+            ));
+
+            foreach ($batch as $ref) {
+                $response = $responses[$ref] ?? null;
+
+                if (! $response instanceof Response) {
+                    $result[$ref] = true;
+
+                    continue;
+                }
+
+                // A product with no photo answers 404, which is not an error here.
+                $files = $response->successful() ? $response->json() : [];
+                $files = is_array($files) ? $files : [];
+
+                $found[self::imageCacheKey($ref, true)] = self::imagePathFromFiles($files, $ref, true);
+                $found[self::imageCacheKey($ref, false)] = self::imagePathFromFiles($files, $ref, false);
+                $result[$ref] = $found[self::imageCacheKey($ref, true)] !== '';
+            }
+        }
+
+        if ($found !== []) {
+            Cache::putMany($found, now()->addHours(6));
+        }
+
+        return $result;
+    }
+
+    private static function imageCacheKey(string $ref, bool $thumbnail): string
+    {
+        return sprintf('dolibarr.image.%s.%s', $thumbnail ? 'small' : 'full', md5($ref));
+    }
+
+    /**
+     * Pick the photo out of a product's document listing, as a path relative
+     * to the product module root, or '' when it has none.
+     *
+     * @param  array<mixed>  $files
+     */
+    private static function imagePathFromFiles(array $files, string $ref, bool $thumbnail): string
+    {
+        $original = null;
+
+        foreach ($files as $file) {
+            $name = is_array($file) ? (string) ($file['relativename'] ?? '') : '';
+
+            // Skip the thumbnails Dolibarr lists alongside the original.
+            if ($name === '' || str_contains($name, 'thumbs/') || str_contains($name, 'thumbs\\')) {
+                continue;
+            }
+
+            if (preg_match('/\.(jpe?g|png|webp|gif)$/i', $name) === 1) {
+                $original = $name;
+                break;
+            }
+        }
+
+        if ($original === null) {
+            return '';
+        }
+
+        if (! $thumbnail) {
+            return $ref.'/'.$original;
+        }
+
+        // Dolibarr names thumbnails "<basename>_small.<ext>" beside the original.
+        $extension = pathinfo($original, PATHINFO_EXTENSION);
+        $base = pathinfo($original, PATHINFO_FILENAME);
+
+        return sprintf('%s/thumbs/%s_small.%s', $ref, $base, $extension);
     }
 
     /**

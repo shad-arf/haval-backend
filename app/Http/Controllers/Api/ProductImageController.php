@@ -55,8 +55,10 @@ class ProductImageController extends Controller
 
         if ($image === null) {
             // No photo is a normal state for many parts, not an error. The
-            // storefront falls back to its reference placeholder.
-            return response()->noContent(404);
+            // storefront falls back to its reference placeholder. The answer
+            // is cached briefly so the browser stops asking on every page,
+            // yet a newly uploaded photo still shows up within the hour.
+            return response()->noContent(404)->setPublic()->setMaxAge(3600);
         }
 
         return new Response($image['content'], 200, [

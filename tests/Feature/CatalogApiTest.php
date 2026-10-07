@@ -174,6 +174,24 @@ class CatalogApiTest extends TestCase
             ->assertJsonPath('has_more', false);
     }
 
+    /**
+     * Every visitor asks for the same first pages, and each one costs the ERP
+     * the better part of a second.
+     */
+    public function test_a_catalog_page_is_fetched_from_the_erp_once_a_minute(): void
+    {
+        Http::fake(['erp.test/*' => Http::response([$this->erpProduct()])]);
+        $catalogRequests = fn (): int => Http::recorded(fn (Request $request): bool => str_contains($request->url(), '/products?'))->count();
+
+        $this->getJson('/api/products?limit=1')->assertOk();
+        $this->getJson('/api/products?limit=1')->assertOk();
+        $this->assertSame(1, $catalogRequests());
+
+        $this->travel(61)->seconds();
+        $this->getJson('/api/products?limit=1')->assertOk();
+        $this->assertSame(2, $catalogRequests());
+    }
+
     public function test_a_single_product_is_priced_the_same_way_as_the_listing(): void
     {
         Http::fake(['erp.test/*' => Http::response($this->erpProduct())]);
