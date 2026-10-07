@@ -213,6 +213,27 @@ class CheckoutApiTest extends TestCase
             ->assertJsonPath('data.total', 33000);
     }
 
+    /** Workshops order in bulk, so a line is no longer capped at 99. */
+    public function test_a_bulk_quantity_is_accepted_when_in_stock(): void
+    {
+        $this->fakeErp($this->erpProduct(['stock_reel' => 500]));
+
+        $this->postJson('/api/checkout', $this->checkoutPayload([
+            'items' => [['product_id' => 19902, 'quantity' => 250]],
+        ]))
+            ->assertCreated()
+            ->assertJsonPath('data.items.0.quantity', 250);
+    }
+
+    public function test_a_quantity_above_the_per_line_cap_is_rejected(): void
+    {
+        $this->fakeErp($this->erpProduct(['stock_reel' => 50000]));
+
+        $this->postJson('/api/checkout', $this->checkoutPayload([
+            'items' => [['product_id' => 19902, 'quantity' => 10000]],
+        ]))->assertStatus(422)->assertJsonValidationErrors('items.0.quantity');
+    }
+
     public function test_ordering_more_than_the_erp_has_in_stock_is_refused(): void
     {
         $this->fakeErp($this->erpProduct(['stock_reel' => 3]));
