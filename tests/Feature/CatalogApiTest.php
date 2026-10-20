@@ -2,13 +2,17 @@
 
 namespace Tests\Feature;
 
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class CatalogApiTest extends TestCase
 {
+    use RefreshDatabase;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -58,6 +62,19 @@ class CatalogApiTest extends TestCase
             ->assertJsonPath('data.0.currency', 'IQD')
             ->assertJsonPath('data.0.stock_status', 'in_stock')
             ->assertJsonPath('data.0.is_sellable', true);
+    }
+
+    public function test_search_logs_snapshot_the_returned_parts_for_guests_even_on_cache_hits(): void
+    {
+        Http::fake(['erp.test/*' => Http::response([$this->erpProduct()])]);
+        $this->getJson('/api/products?q=DS3200GS')->assertOk();
+        $this->getJson('/api/products?q=DS3200GS')->assertOk();
+        $this->assertDatabaseCount('search_logs', 2);
+        $log = DB::table('search_logs')->first();
+        $this->assertNull($log->user_id);
+        $this->assertSame(1, $log->result_count);
+        $this->assertSame('DS3200GS', json_decode($log->results, true)[0]['ref']);
+        $this->assertArrayNotHasKey('dealer_price', json_decode($log->results, true)[0]);
     }
 
     public function test_it_asks_the_erp_to_exclude_unpriceable_and_out_of_stock_parts(): void
@@ -235,8 +252,8 @@ class CatalogApiTest extends TestCase
 
         $this->getJson('/api/brands')
             ->assertOk()
-            ->assertJsonPath('data.0', ['id' => 10, 'name' => 'TEKNOROT'])
-            ->assertJsonPath('data.1', ['id' => 11, 'name' => 'KAUTEK']);
+            ->assertJsonPath('data.0', ['id' => 10, 'name' => 'TEKNOROT', 'image_url' => '/api/brands/10/image'])
+            ->assertJsonPath('data.1', ['id' => 11, 'name' => 'KAUTEK', 'image_url' => '/api/brands/11/image']);
     }
 
     public function test_an_erp_outage_is_reported_as_service_unavailable(): void

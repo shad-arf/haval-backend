@@ -110,6 +110,42 @@ class DolibarrClient
     }
 
     /**
+     * First category photo, using Dolibarr's category document directory layout.
+     */
+    public function brandImagePath(int $id): ?string
+    {
+        $path = Cache::remember('dolibarr.brand-image-path.'.$id, now()->addHour(), function () use ($id): string {
+            try {
+                $files = $this->get('documents', ['modulepart' => 'category', 'id' => $id]);
+            } catch (DolibarrRequestException $exception) {
+                if ($exception->upstreamStatus === 404) {
+                    return '';
+                }
+
+                throw $exception;
+            }
+
+            foreach ($files as $file) {
+                $name = is_array($file) ? (string) ($file['relativename'] ?? '') : '';
+
+                if ($name === '' || str_contains($name, '..') || str_contains($name, 'thumbs/') || str_contains($name, 'thumbs\\') || str_starts_with($name, '/')) {
+                    continue;
+                }
+
+                if (preg_match('/\.(jpe?g|png|webp|gif)$/i', $name) === 1) {
+                    $digits = str_pad((string) ($id % 100), 2, '0', STR_PAD_LEFT);
+
+                    return $digits[1].'/'.$digits[0].'/'.$id.'/photos/'.$name;
+                }
+            }
+
+            return '';
+        });
+
+        return $path === '' ? null : $path;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function product(int $id): array

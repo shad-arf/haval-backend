@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\ErpProductController;
 use App\Http\Controllers\Api\FibPaymentController;
 use App\Http\Controllers\Api\FibQrPaymentController;
 use App\Http\Controllers\Api\ProductImageController;
+use App\Http\Controllers\Api\SearchLogController;
 use App\Http\Controllers\Api\SiteSettingsController;
 use Illuminate\Support\Facades\Route;
 
@@ -39,6 +40,9 @@ Route::get('/settings', [SiteSettingsController::class, 'index']);
 // Catalog — read-only, straight through to Dolibarr.
 Route::get('/erp/health', [ErpProductController::class, 'health']);
 Route::get('/brands', [ErpProductController::class, 'brands']);
+Route::get('/brands/{id}/image', [ProductImageController::class, 'brand'])
+    ->name('brands.image')
+    ->whereNumber('id');
 Route::get('/products', [ErpProductController::class, 'index']);
 Route::get('/products/ref/{ref}', [ErpProductController::class, 'byRef']);
 Route::get('/products/{id}', [ErpProductController::class, 'show'])->whereNumber('id');
@@ -64,3 +68,7 @@ Route::post('/payments/fib/callback', [FibPaymentController::class, 'callback'])
 Route::post('/payments/fib-qr/callback', [FibQrPaymentController::class, 'callback']);
 Route::get('/payments/fib/return/{reference}', [FibPaymentController::class, 'return'])
     ->name('payments.fib.return');
+
+Route::get('/admin/searches', [SearchLogController::class, 'index']);
+
+Route::get('/admin/search-insights', [SearchLogController::class, 'insights']);

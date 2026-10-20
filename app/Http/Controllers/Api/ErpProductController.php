@@ -11,6 +11,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 class ErpProductController extends Controller
@@ -43,7 +44,7 @@ class ErpProductController extends Controller
         $brandId = (int) ($input['brand'] ?? 0);
         $search = trim((string) ($input['q'] ?? ''));
 
-        return $this->respond(function () use ($limit, $page, $brandId, $search): array {
+        return $this->respond(function () use ($request, $limit, $page, $brandId, $search): array {
             // Dolibarr loads every product and its warehouse stock one by one,
             // so a page costs it the better part of a second. Every visitor
             // asks for the same first pages; a minute of staleness is fine for
@@ -76,6 +77,18 @@ class ErpProductController extends Controller
             // ERP's newest-first order holds within each group.
             usort($catalog, static fn (array $a, array $b): int => ($b['image_url'] !== null) <=> ($a['image_url'] !== null));
 
+            if ($search !== '' && $page === 0) {
+                DB::table('search_logs')->insert([
+                    'user_id' => AccountController::user($request)?->id,
+                    'query' => $search,
+                    'brand_id' => $brandId ?: null,
+                    'result_count' => count($catalog),
+                    'has_more' => count($products) === $limit,
+                    'results' => json_encode(array_map(static fn (array $item): array => array_intersect_key($item, array_flip(['id', 'ref', 'name'])), $catalog)),
+                    'created_at' => now(),
+                ]);
+            }
+
             return [
                 'data' => $catalog,
                 'page' => $page,
@@ -95,6 +108,7 @@ class ErpProductController extends Controller
                 'data' => array_map(static fn (array $brand): array => [
                     'id' => (int) $brand['id'],
                     'name' => (string) $brand['label'],
+                    'image_url' => route('brands.image', ['id' => (int) $brand['id']], false),
                 ], $brands),
             ];
         });

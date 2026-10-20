@@ -23,6 +23,25 @@ class ProductImageController extends Controller
 
     public function __construct(private readonly DolibarrClient $dolibarr) {}
 
+    public function brand(int $id): SymfonyResponse
+    {
+        $image = Cache::remember('brand-image.'.$id, now()->addHour(), function () use ($id): ?array {
+            $path = $this->dolibarr->brandImagePath($id);
+
+            return $path === null ? null : $this->dolibarr->downloadDocument('category', $path);
+        });
+
+        if ($image === null || ! in_array($image['mime'], ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], true)) {
+            return response()->noContent(404)->setPublic()->setMaxAge(300);
+        }
+
+        return new Response($image['content'], 200, [
+            'Content-Type' => $image['mime'],
+            'Content-Length' => (string) strlen($image['content']),
+            'Cache-Control' => 'public, max-age=3600',
+        ]);
+    }
+
     public function show(Request $request, string $ref): SymfonyResponse
     {
         // The reference becomes a path segment in the ERP request, so anything
