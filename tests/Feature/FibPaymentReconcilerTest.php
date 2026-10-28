@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Order;
+use App\Services\FibCardsClient;
 use App\Services\FibPaymentReconciler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\ConnectionException;
@@ -262,11 +263,13 @@ class FibPaymentReconcilerTest extends TestCase
             ->push(['accessToken' => 'token'], 200)
             ->push(['errorCode' => '404'], 404);
 
-        $this->postJson('/api/payments/fib/callback', [
+        $body = [
             'orderId' => '1790250482833150',
             'status' => 'SUCCESS',
             'returnCode' => '000',
-        ])->assertOk();
+        ];
+        $signature = FibCardsClient::sign(FibCardsClient::canonicalJson($body), 'test-secret');
+        $this->postJson('/api/payments/fib/callback', $body, ['X-HMAC' => $signature])->assertOk();
 
         $this->assertSame(Order::STATUS_PENDING, $order->refresh()->status);
     }
@@ -275,9 +278,95 @@ class FibPaymentReconcilerTest extends TestCase
     {
         Http::fake();
 
-        $this->postJson('/api/payments/fib/callback', ['orderId' => 'nope'])
+        $body = ['orderId' => 'nope'];
+        $signature = FibCardsClient::sign(FibCardsClient::canonicalJson($body), 'test-secret');
+        $this->postJson('/api/payments/fib/callback', $body, ['X-HMAC' => $signature])
             ->assertOk()
             ->assertJsonPath('received', true);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_unsigned_or_forged_callbacks_are_rejected_without_checking_payment(): void
+    {
+        $order = $this->order();
+        Http::fake();
+        $body = ['orderId' => '1790250482833150', 'status' => 'SUCCESS'];
+
+        $this->postJson('/api/payments/fib/callback', $body)->assertUnauthorized();
+        $this->postJson('/api/payments/fib/callback', $body, ['X-HMAC' => str_repeat('0', 128)])->assertUnauthorized();
+        $signature = FibCardsClient::sign(FibCardsClient::canonicalJson($body), 'test-secret');
+        $body['status'] = 'FAILED';
+        $this->postJson('/api/payments/fib/callback', $body, ['X-HMAC' => $signature])->assertUnauthorized();
+
+        Http::assertNothingSent();
+        $this->assertSame(Order::STATUS_PENDING, $order->refresh()->status);
+    }
+
+    public function test_a_valid_signed_callback_confirms_payment_using_fib_status(): void
+    {
+        $order = $this->order();
+        $this->fakeFib(['paymentData' => ['status' => 'SUCCESS', 'returnCode' => '000', 'amount' => '22000']]);
+        $body = ['status' => 'PENDING', 'orderId' => '1790250482833150'];
+        $signature = FibCardsClient::sign(FibCardsClient::canonicalJson($body), 'test-secret');
+
+        $this->postJson('/api/payments/fib/callback', $body, ['X-HMAC' => $signature])->assertOk();
+
+        $this->assertSame(Order::STATUS_PAID, $order->refresh()->status);
+    }
+
+    public function test_callback_verification_preserves_nested_objects_and_list_order(): void
+    {
+        $client = app(FibCardsClient::class);
+        $body = '{"orderId":"123","details":{"z":{},"a":[{"z":2,"a":1},3]}}';
+        $canonical = '{"details":{"a":[{"a":1,"z":2},3],"z":{}},"orderId":"123"}';
+        $signature = hash_hmac('sha512', $canonical, 'test-secret');
+
+        $this->assertTrue($client->verifyCallback($body, $signature));
+        $this->assertFalse($client->verifyCallback('invalid json', $signature));
+        $this->assertFalse($client->verifyCallback('[]', $signature));
+        config()->set('fib.hmac_secret', '');
+        $this->assertFalse($client->verifyCallback($body, $signature));
+    }
+
+    public function test_scheduled_checks_cancel_a_payment_fib_reports_as_expired(): void
+    {
+        foreach (['terminal_number', 'institution', 'merchant_id', 'acquirer'] as $key) {
+            config()->set('fib.'.$key, 'test-value');
+        }
+        $order = $this->order();
+        $this->fakeFib(['paymentData' => ['status' => 'EXPIRED']]);
+
+        $this->artisan('fib:reconcile-payments')->assertSuccessful();
+
+        $this->assertSame(Order::STATUS_CANCELLED, $order->refresh()->status);
+        $this->assertNull($order->paid_at);
+    }
+
+    public function test_scheduled_checks_keep_old_unresolved_payments_unpaid_without_guessing_expiry(): void
+    {
+        foreach (['terminal_number', 'institution', 'merchant_id', 'acquirer'] as $key) {
+            config()->set('fib.'.$key, 'test-value');
+        }
+        $order = $this->order();
+        $order->update(['created_at' => now()->subDays(2)]);
+        $this->fakeFib(['paymentData' => ['status' => 'ERROR']]);
+
+        $this->artisan('fib:reconcile-payments')->assertSuccessful();
+
+        $this->assertSame(Order::STATUS_PENDING, $order->refresh()->status);
+        $this->assertNull($order->paid_at);
+    }
+
+    public function test_scheduled_checks_skip_paid_orders(): void
+    {
+        foreach (['terminal_number', 'institution', 'merchant_id', 'acquirer'] as $key) {
+            config()->set('fib.'.$key, 'test-value');
+        }
+        $this->order(Order::STATUS_PAID);
+        Http::fake();
+
+        $this->artisan('fib:reconcile-payments')->assertSuccessful();
 
         Http::assertNothingSent();
     }

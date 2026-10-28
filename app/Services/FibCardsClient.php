@@ -133,9 +133,8 @@ class FibCardsClient
 
         if ($result['http'] < 200 || $result['http'] >= 300 || $redirect === '') {
             throw new RuntimeException(sprintf(
-                'FIB did not return a card payment page (HTTP %d): %s',
+                'FIB did not return a card payment page (HTTP %d).',
                 $result['http'],
-                (string) ($result['data']['description'] ?? 'no description'),
             ));
         }
 
@@ -178,9 +177,8 @@ class FibCardsClient
 
         if ($result['http'] < 200 || $result['http'] >= 300) {
             throw new RuntimeException(sprintf(
-                'FIB rejected the credentials (HTTP %d): %s',
+                'FIB rejected the credentials (HTTP %d).',
                 $result['http'],
-                (string) ($result['data']['description'] ?? 'no description'),
             ));
         }
 
@@ -239,6 +237,42 @@ class FibCardsClient
     public static function sign(string $canonicalJson, string $secret): string
     {
         return hash_hmac('sha512', $canonicalJson, $secret);
+    }
+
+    /** Verify the JSON body, preserving objects and list order when canonicalising. */
+    public function verifyCallback(string $body, ?string $signature): bool
+    {
+        $secret = (string) config('fib.hmac_secret');
+
+        if ($secret === '' || $signature === null || ! preg_match('/\A[0-9a-fA-F]{128}\z/', $signature)) {
+            return false;
+        }
+
+        $decoded = json_decode($body);
+
+        if (! $decoded instanceof \stdClass || json_last_error() !== JSON_ERROR_NONE) {
+            return false;
+        }
+
+        $canonical = json_encode($this->sortCallbackKeys($decoded), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return $canonical !== false && hash_equals(self::sign($canonical, $secret), strtolower($signature));
+    }
+
+    private function sortCallbackKeys(mixed $value): mixed
+    {
+        if ($value instanceof \stdClass) {
+            $properties = get_object_vars($value);
+            uksort($properties, static fn ($a, $b): int => strcmp(strtolower((string) $a), strtolower((string) $b)));
+
+            return (object) array_map($this->sortCallbackKeys(...), $properties);
+        }
+
+        if (is_array($value)) {
+            return array_map($this->sortCallbackKeys(...), $value);
+        }
+
+        return $value;
     }
 
     /**
@@ -337,7 +371,7 @@ class FibCardsClient
                 ->timeout(max(1, (int) config('fib.timeout')))
                 ->post($base.$path);
         } catch (ConnectionException $exception) {
-            $this->log(sprintf('POST %s failed: %s', $path, $exception->getMessage()));
+            $this->log(sprintf('POST %s failed: connection error', $path));
 
             throw new RuntimeException('The card payment service is not responding.', 0, $exception);
         }
@@ -345,7 +379,7 @@ class FibCardsClient
         $http = $response->status();
         $data = $response->json();
 
-        $this->log(sprintf('POST %s -> HTTP %d %s', $path, $http, $response->body()));
+        $this->log(sprintf('POST %s -> HTTP %d', $path, $http));
 
         if (! is_array($data)) {
             throw new RuntimeException(sprintf('FIB returned a non-JSON response (HTTP %d).', $http));

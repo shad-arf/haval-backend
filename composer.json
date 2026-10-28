@@ -6,7 +6,7 @@
     "keywords": ["laravel", "framework"],
     "license": "MIT",
     "require": {
-        "php": "^8.3",
+        "php": "^8.4.1",
         "laravel/framework": "^13.17",
         "laravel/tinker": "^3.0",
         "mpdf/mpdf": "^8.3"
@@ -83,7 +83,7 @@
             "php-http/discovery": true
         },
         "platform": {
-            "php": "8.3.0"
+            "php": "8.4.1"
         }
     },
     "minimum-stability": "stable",

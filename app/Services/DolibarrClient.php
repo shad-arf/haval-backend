@@ -563,7 +563,9 @@ class DolibarrClient
             ->post($baseUrl.'/'.ltrim($path, '/'), $payload);
 
         if (! $response->successful()) {
-            throw new DolibarrRequestException($response->status());
+            $message = $response->json('error.message');
+
+            throw new DolibarrRequestException($response->status(), is_string($message) ? $message : null);
         }
 
         $data = $response->json();

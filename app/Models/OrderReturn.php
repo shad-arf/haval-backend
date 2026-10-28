@@ -46,6 +46,6 @@ class OrderReturn extends Model
     public function isErpSynced(): bool
     {
         return $this->dolibarr_credit_note_id !== null
-            && ($this->dolibarr_refunded_at !== null || (int) config('dolibarr.bank_account_id') <= 0);
+            && ($this->dolibarr_refunded_at !== null || $this->order->erpBankAccountId() <= 0);
     }
 }

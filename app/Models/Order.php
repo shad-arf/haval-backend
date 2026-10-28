@@ -163,7 +163,16 @@ class Order extends Model
     {
         return $this->dolibarr_invoice_id !== null
             && ($this->dolibarr_order_id !== null || ! config('dolibarr.push_sales_orders'))
-            && ($this->dolibarr_paid_at !== null || (int) config('dolibarr.bank_account_id') <= 0);
+            && ($this->dolibarr_paid_at !== null || $this->erpBankAccountId() <= 0);
+    }
+
+    public function erpBankAccountId(): int
+    {
+        $online = (int) config('dolibarr.online_bank_account_id');
+
+        return $this->payment_method !== self::METHOD_COD && $online > 0
+            ? $online
+            : (int) config('dolibarr.bank_account_id');
     }
 
     /**

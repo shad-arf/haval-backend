@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\FibPaymentAttempt;
 use App\Models\Order;
 use App\Services\DolibarrOrderPusher;
+use App\Services\FibCardsClient;
 use App\Services\FibPaymentReconciler;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -31,10 +32,14 @@ class FibPaymentController extends Controller
      * FIB's server-to-server callback.
      *
      * The body is used only to work out which order to look at. Whatever it
-     * claims about the outcome is ignored — anyone can post here.
+     * claims about the outcome is ignored; FIB status is still authoritative.
      */
     public function callback(Request $request): JsonResponse
     {
+        if (! app(FibCardsClient::class)->verifyCallback($request->getContent(), $request->header('X-HMAC'))) {
+            return response()->json(['message' => 'Invalid callback signature.'], 401);
+        }
+
         $fibOrderId = (string) $request->input('orderId', '');
         Log::info('[fib-cards] callback received for FIB order '.($fibOrderId !== '' ? $fibOrderId : 'unknown'));
 

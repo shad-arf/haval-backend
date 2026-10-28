@@ -71,7 +71,7 @@ class DolibarrOrderPusher
             $invoiceId = $order->dolibarr_invoice_id ?? $this->createInvoice($order, $customerId);
             $order->update(['dolibarr_invoice_id' => $invoiceId]);
 
-            if ($order->dolibarr_paid_at === null && $this->recordsPayments()) {
+            if ($order->dolibarr_paid_at === null && $this->recordsPayments($order)) {
                 $this->recordPayment($order, $invoiceId);
                 $order->update(['dolibarr_paid_at' => now()]);
             }
@@ -102,9 +102,9 @@ class DolibarrOrderPusher
         return (bool) config('dolibarr.push_sales_orders');
     }
 
-    private function recordsPayments(): bool
+    private function recordsPayments(Order $order): bool
     {
-        return (int) config('dolibarr.bank_account_id') > 0;
+        return $order->erpBankAccountId() > 0;
     }
 
     /**
@@ -208,7 +208,7 @@ class DolibarrOrderPusher
             $creditNoteId = $return->dolibarr_credit_note_id ?? $this->createCreditNote($return, $order);
             $return->update(['dolibarr_credit_note_id' => $creditNoteId]);
 
-            if ($return->dolibarr_refunded_at === null && $this->recordsPayments()) {
+            if ($return->dolibarr_refunded_at === null && $this->recordsPayments($order)) {
                 $this->recordRefund($return, $order, $creditNoteId);
                 $return->update(['dolibarr_refunded_at' => now()]);
             }
@@ -380,11 +380,7 @@ class DolibarrOrderPusher
 
     private function bankAccountFor(Order $order): int
     {
-        $online = (int) config('dolibarr.online_bank_account_id');
-
-        return $order->payment_method !== Order::METHOD_COD && $online > 0
-            ? $online
-            : (int) config('dolibarr.bank_account_id');
+        return $order->erpBankAccountId();
     }
 
     private function paymentLabel(Order $order): string

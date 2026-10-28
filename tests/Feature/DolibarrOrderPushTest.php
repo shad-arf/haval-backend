@@ -28,15 +28,17 @@ class DolibarrOrderPushTest extends TestCase
         config()->set('dolibarr.url', 'http://erp.test/api/index.php');
         config()->set('dolibarr.key', 'test-key');
         config()->set('dolibarr.push_orders', true);
+        config()->set('dolibarr.push_sales_orders', true);
         config()->set('dolibarr.customer_id', self::ONLINE_CUSTOMER);
         config()->set('dolibarr.warehouse_id', 6);
         config()->set('dolibarr.bank_account_id', 1);
+        config()->set('dolibarr.online_bank_account_id', 0);
     }
 
     /** Fakes an empty ERP that knows one dealer, CU2609-00412. */
-    private function fakeErp(float $remainToPay = 14.34): void
+    private function fakeErp(float $remainToPay = 14.34, ?string $paymentError = null): void
     {
-        Http::fake(function (Request $request) use ($remainToPay) {
+        Http::fake(function (Request $request) use ($remainToPay, $paymentError) {
             if ($this->erpDown) {
                 return Http::response(['error' => 'down'], 500);
             }
@@ -53,7 +55,9 @@ class DolibarrOrderPushTest extends TestCase
                 $request->method() === 'POST' && str_ends_with($path, '/invoices') => Http::response(($request['type'] ?? 0) === 2 ? '701' : '601'),
                 str_ends_with($path, '/lines') => Http::response('1'),
                 str_ends_with($path, '/validate') => Http::response(['ok' => true]),
-                str_ends_with($path, '/payments') => Http::response('77'),
+                str_ends_with($path, '/payments') => $paymentError === null
+                    ? Http::response('77')
+                    : Http::response(['error' => ['code' => 400, 'message' => $paymentError]], 400),
                 str_ends_with($path, '/paymentsdistributed') => Http::response('78'),
                 str_ends_with($path, '/invoices/601') => Http::response(['lines' => [], 'socid' => self::DEALER_CUSTOMER, 'paye' => $remainToPay > 0 ? 0 : 1, 'remaintopay' => $remainToPay]),
                 str_ends_with($path, '/invoices/701') => Http::response(['lines' => [], 'status' => 1, 'paye' => 0, 'remaintopay' => -7.17]),
@@ -62,10 +66,10 @@ class DolibarrOrderPushTest extends TestCase
         });
     }
 
-    private function paidOrder(?User $user = null): Order
+    private function paidOrder(?User $user = null, string $reference = 'WEB-777777'): Order
     {
         $order = Order::create([
-            'reference' => 'WEB-777777', 'access_key' => Order::newAccessKey(),
+            'reference' => $reference, 'access_key' => Order::newAccessKey(),
             'status' => Order::STATUS_PAID, 'payment_method' => Order::METHOD_FIB_CARD,
             'customer_name' => 'Test', 'customer_phone' => '07700000000', 'city' => 'Erbil',
             'address_line' => 'Street', 'subtotal' => 1000, 'total' => 1000, 'paid_at' => now(),
@@ -145,6 +149,42 @@ class DolibarrOrderPushTest extends TestCase
         $this->assertTrue(app(DolibarrOrderPusher::class)->push($this->paidOrder()));
 
         Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/payments') && $request['paymentid'] === 6 && $request['accountid'] === 3);
+    }
+
+    public function test_online_payments_are_recorded_when_only_the_online_bank_account_is_configured(): void
+    {
+        config()->set('dolibarr.bank_account_id', 0);
+        config()->set('dolibarr.online_bank_account_id', 3);
+        $this->fakeErp();
+
+        foreach ([Order::METHOD_FIB_CARD, Order::METHOD_FIB_QR] as $method) {
+            $order = $this->paidOrder(reference: 'WEB-'.$method);
+            $order->update(['payment_method' => $method, 'dolibarr_invoice_id' => 601, 'dolibarr_order_id' => 501, 'dolibarr_synced_at' => now()]);
+
+            $this->assertFalse($order->fresh()->isErpSynced());
+            $this->assertTrue(app(DolibarrOrderPusher::class)->push($order));
+            $this->assertNotNull($order->fresh()->dolibarr_paid_at);
+            $this->assertTrue($order->fresh()->isErpSynced());
+
+            Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/invoices/601/payments')
+                && $request['accountid'] === 3
+                && $request['paymentid'] === (int) config('dolibarr.payment_modes.'.$method));
+        }
+
+        Http::assertNotSent(fn (Request $request) => $request->method() === 'POST' && str_ends_with($request->url(), '/invoices'));
+    }
+
+    public function test_rejected_payment_preserves_the_erp_error_and_existing_invoice(): void
+    {
+        $this->fakeErp(paymentError: 'Add payment to bank error : ErrorBankAccountNotFound');
+        $order = $this->paidOrder();
+        $order->update(['dolibarr_invoice_id' => 601, 'dolibarr_order_id' => 501]);
+
+        $this->assertFalse(app(DolibarrOrderPusher::class)->push($order));
+        $this->assertSame(601, $order->fresh()->dolibarr_invoice_id);
+        $this->assertNull($order->fresh()->dolibarr_paid_at);
+        $this->assertFalse($order->fresh()->isErpSynced());
+        $this->assertSame('Dolibarr: Add payment to bank error : ErrorBankAccountNotFound (HTTP 400)', $order->fresh()->dolibarr_error);
     }
 
     public function test_an_already_paid_invoice_is_not_paid_twice(): void
